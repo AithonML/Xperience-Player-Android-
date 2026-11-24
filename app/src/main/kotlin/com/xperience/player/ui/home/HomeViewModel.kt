@@ -26,6 +26,7 @@ import com.xperience.player.domain.model.TopPickItem
 import com.xperience.player.domain.model.TopPickKind
 import com.xperience.player.domain.model.TrackItem
 import com.xperience.player.domain.model.UserPlaylist
+import com.xperience.player.domain.model.YouTubeMusicLibraryPlaylist
 import com.xperience.player.domain.model.YtmAccountState
 import com.xperience.player.domain.model.YtmMoodCategory
 import com.xperience.player.domain.model.YtmMoodCategoryDetail
@@ -91,6 +92,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -159,7 +161,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     val trackForRingtoneEditor: StateFlow<TrackItem?> = _trackForRingtoneEditor.asStateFlow()
 
     private var widgetDeepLinkJob: Job? = null
-    val favoritesRepository = FavoritesRepository(application)
+    val favoritesRepository = FavoritesRepository.getInstance(application)
     val likedTracks: StateFlow<List<TrackItem>> = favoritesRepository.likedTracks
     val likedTrackIds: StateFlow<Set<String>> = favoritesRepository.likedTrackIds
 
@@ -234,6 +236,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, audioPlayerService.playbackState.value)
 
+    val playbackPositionMs: StateFlow<Long> = combine(
+        audioPlayerService.playbackPositionMs,
+        castController.castState
+    ) { localPos, cast ->
+        if (cast.isConnected) cast.positionMs else localPos
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), audioPlayerService.playbackPositionMs.value)
+
+    private val trackPlayedHook: (TrackItem) -> Unit = { track ->
+        catalogService.recordTrackPlayed(track)
+    }
+    private val similarTracksFallbackHook: (List<TrackItem>, Set<String>) -> List<TrackItem> =
+        ::buildOfflineSimilarTracksFallback
+    private val widgetFavoriteToggleHook: (String, TrackItem?) -> Boolean? = { trackId, fallback ->
+        val wasLiked = favoritesRepository.likedTrackIds.value.contains(trackId)
+        toggleFavorite(trackId, fallback)
+        !wasLiked
+    }
+    private val widgetRefreshRecommendationsHook: () -> Unit = {
+        refreshHomeFeed()
+    }
+
     private val _isInitialHomeReady = MutableStateFlow(false)
     val isInitialHomeReady: StateFlow<Boolean> = _isInitialHomeReady.asStateFlow()
 
@@ -253,6 +276,41 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _ytmLoginError = MutableStateFlow<String?>(null)
     val ytmLoginError: StateFlow<String?> = _ytmLoginError.asStateFlow()
+
+    // YouTube Music Playlist Import & Local Removal Confirmation State
+    private val _isYtmPlaylistImportOpen = MutableStateFlow(false)
+    val isYtmPlaylistImportOpen: StateFlow<Boolean> = _isYtmPlaylistImportOpen.asStateFlow()
+
+    private val _isLoadingYtmLibraryPlaylists = MutableStateFlow(false)
+    val isLoadingYtmLibraryPlaylists: StateFlow<Boolean> = _isLoadingYtmLibraryPlaylists.asStateFlow()
+
+    private val _ytmLibraryPlaylists = MutableStateFlow<List<YouTubeMusicLibraryPlaylist>>(emptyList())
+    val ytmLibraryPlaylists: StateFlow<List<YouTubeMusicLibraryPlaylist>> = _ytmLibraryPlaylists.asStateFlow()
+
+    private val _selectedYtmPlaylistIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedYtmPlaylistIds: StateFlow<Set<String>> = _selectedYtmPlaylistIds.asStateFlow()
+
+    private val _isImportingYtmPlaylists = MutableStateFlow(false)
+    val isImportingYtmPlaylists: StateFlow<Boolean> = _isImportingYtmPlaylists.asStateFlow()
+
+    private val _ytmImportProgressText = MutableStateFlow<String?>(null)
+    val ytmImportProgressText: StateFlow<String?> = _ytmImportProgressText.asStateFlow()
+
+    private val _ytmImportError = MutableStateFlow<String?>(null)
+    val ytmImportError: StateFlow<String?> = _ytmImportError.asStateFlow()
+
+    private val _ytmImportStatusMessage = MutableStateFlow<String?>(null)
+    val ytmImportStatusMessage: StateFlow<String?> = _ytmImportStatusMessage.asStateFlow()
+
+    private val _playlistPendingDelete = MutableStateFlow<UserPlaylist?>(null)
+    val playlistPendingDelete: StateFlow<UserPlaylist?> = _playlistPendingDelete.asStateFlow()
+
+    private val _isRefreshingImportedPlaylist = MutableStateFlow(false)
+    val isRefreshingImportedPlaylist: StateFlow<Boolean> = _isRefreshingImportedPlaylist.asStateFlow()
+
+    private var ytmLibraryPlaylistsLoadJob: Job? = null
+    private var ytmPlaylistImportJob: Job? = null
+    private var refreshImportedPlaylistJob: Job? = null
 
     // Ordered LIFO overlay stack so Search can open over any detail screen
     // and return cleanly to the exact prior destination on Back/Close.
@@ -621,25 +679,29 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         refreshFolders()
         _recentSearches.value = catalogService.getRecentSearches()
 
-        audioPlayerService.onTrackPlayed = { track ->
-            catalogService.recordTrackPlayed(track)
-        }
-        audioPlayerService.fallbackSimilarTracksProvider = ::buildOfflineSimilarTracksFallback
+        audioPlayerService.onTrackPlayed = trackPlayedHook
+        audioPlayerService.fallbackSimilarTracksProvider = similarTracksFallbackHook
 
+        // Mark home ready immediately after local/cached hydration without blocking splash on 18+ network requests
         viewModelScope.launch {
-            try {
-                catalogService.updateLikedSeeds(favoritesRepository.likedTracks.value)
+            catalogService.updateLikedSeeds(favoritesRepository.likedTracks.value)
+            val initJob = launch {
                 catalogService.initializeCatalog()
-            } finally {
-                _isInitialHomeReady.value = true
             }
+            kotlinx.coroutines.withTimeoutOrNull(350L) {
+                initJob.join()
+            }
+            _isInitialHomeReady.value = true
+            initJob.join()
+            // Defer secondary recommendations until after initial home render
             refreshLikedRecommendations()
-            loadMoodsAndGenres()
         }
 
         // Observe track changes to dynamically extract prominent album artwork colors & Aurora palette
         viewModelScope.launch {
-            playbackState.collect { state ->
+            playbackState
+                .distinctUntilChangedBy { it.currentTrack?.id }
+                .collect { state ->
                 val track = state.currentTrack
                 if (track != null) {
                     if (track.id != lastArtworkTrackId) {
@@ -691,7 +753,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
         // Observe track changes to automatically resolve synchronized lyrics and motion canvas
         viewModelScope.launch {
-            playbackState.collect { state ->
+            playbackState
+                .distinctUntilChangedBy { it.currentTrack?.id }
+                .collect { state ->
                 val track = state.currentTrack
                 if (track != null) {
                     if (track.id != lastLyricsTrackId) {
@@ -763,7 +827,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 currentTrack = ps.currentTrack,
                 queue = ps.queue,
                 currentQueueIndex = ps.currentQueueIndex,
-                positionMs = ps.currentPositionMs,
+                positionMs = localPlayer.playbackPositionMs.value,
                 isPlaying = ps.isPlaying,
                 repeatMode = ps.repeatMode,
                 isShuffleEnabled = ps.isShuffleEnabled
@@ -799,14 +863,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // Live Home Screen Widget synchronization (playback + curated playlist recommendations)
-        WidgetSyncBridge.onFavoriteToggleRequested = { trackId, fallback ->
-            val wasLiked = favoritesRepository.likedTrackIds.value.contains(trackId)
-            toggleFavorite(trackId, fallback)
-            !wasLiked
-        }
-        WidgetSyncBridge.onRefreshRecommendationsRequested = {
-            refreshHomeFeed()
-        }
+        WidgetSyncBridge.onFavoriteToggleRequested = widgetFavoriteToggleHook
+        WidgetSyncBridge.onRefreshRecommendationsRequested = widgetRefreshRecommendationsHook
 
         viewModelScope.launch(Dispatchers.IO) {
             combine(
@@ -2285,6 +2343,223 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun requestDeletePlaylist(playlist: UserPlaylist) {
+        _playlistPendingDelete.value = playlist
+    }
+
+    fun cancelDeletePlaylist() {
+        _playlistPendingDelete.value = null
+    }
+
+    /**
+     * Confirms removal of a playlist from Xperience Player.
+     * Strictly local: deletes only from PlaylistRepository and never calls any YouTube Music API.
+     */
+    fun confirmDeletePlaylist() {
+        val target = _playlistPendingDelete.value ?: return
+        _playlistPendingDelete.value = null
+        deletePlaylist(target.id)
+    }
+
+    // YouTube Music Playlist Import & Refresh Actions
+    fun openYtmPlaylistImport() {
+        _ytmImportError.value = null
+        _ytmImportProgressText.value = null
+        _isYtmPlaylistImportOpen.value = true
+        loadYtmLibraryPlaylists()
+    }
+
+    fun loadYtmLibraryPlaylists() {
+        ytmLibraryPlaylistsLoadJob?.cancel()
+        if (!catalogService.authManager.isSignedIn()) {
+            _ytmLibraryPlaylists.value = emptyList()
+            _selectedYtmPlaylistIds.value = emptySet()
+            _ytmImportError.value = "Sign in to YouTube Music to load your playlists."
+            _isLoadingYtmLibraryPlaylists.value = false
+            return
+        }
+
+        ytmLibraryPlaylistsLoadJob = viewModelScope.launch {
+            _isLoadingYtmLibraryPlaylists.value = true
+            _ytmImportError.value = null
+            try {
+                val fetched = youTubeMusicService.fetchUserLibraryPlaylists()
+                _ytmLibraryPlaylists.value = fetched
+
+                val existingExternalIds = playlistRepository.playlists.value
+                    .mapNotNull { pl ->
+                        pl.externalPlaylistId
+                            .takeIf { it.isNotBlank() }
+                            ?.let { PlaylistRepository.normalizeYouTubePlaylistId(it).lowercase() }
+                    }
+                    .toSet()
+
+                val notYetImportedIds = fetched
+                    .map { it.playlistId }
+                    .filter { id ->
+                        PlaylistRepository.normalizeYouTubePlaylistId(id).lowercase() !in existingExternalIds
+                    }
+                    .toSet()
+
+                _selectedYtmPlaylistIds.value = notYetImportedIds
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                _ytmImportError.value = e.message?.takeIf { it.isNotBlank() }
+                    ?: "Could not load your YouTube Music playlists. Please try again."
+            } finally {
+                _isLoadingYtmLibraryPlaylists.value = false
+            }
+        }
+    }
+
+    fun closeYtmPlaylistImport() {
+        ytmLibraryPlaylistsLoadJob?.cancel()
+        ytmLibraryPlaylistsLoadJob = null
+        ytmPlaylistImportJob?.cancel()
+        ytmPlaylistImportJob = null
+        _isLoadingYtmLibraryPlaylists.value = false
+        _isImportingYtmPlaylists.value = false
+        _ytmImportProgressText.value = null
+        _ytmImportError.value = null
+        _isYtmPlaylistImportOpen.value = false
+    }
+
+    fun dismissYtmImportStatusMessage() {
+        _ytmImportStatusMessage.value = null
+    }
+
+    fun toggleYtmPlaylistSelection(playlistId: String) {
+        if (_isImportingYtmPlaylists.value) return
+        _selectedYtmPlaylistIds.update { current ->
+            if (playlistId in current) current - playlistId else current + playlistId
+        }
+    }
+
+    fun selectAllYtmPlaylists() {
+        if (_isImportingYtmPlaylists.value) return
+        _selectedYtmPlaylistIds.value = _ytmLibraryPlaylists.value.map { it.playlistId }.toSet()
+    }
+
+    fun clearYtmPlaylistSelection() {
+        if (_isImportingYtmPlaylists.value) return
+        _selectedYtmPlaylistIds.value = emptySet()
+    }
+
+    fun importSelectedYtmPlaylists() {
+        if (_isImportingYtmPlaylists.value) return
+        if (!catalogService.authManager.isSignedIn()) {
+            _ytmImportError.value = "Sign in to YouTube Music to import playlists."
+            return
+        }
+        val selectedIds = _selectedYtmPlaylistIds.value
+        val toImport = _ytmLibraryPlaylists.value.filter { it.playlistId in selectedIds }
+        if (toImport.isEmpty()) return
+
+        ytmPlaylistImportJob?.cancel()
+        ytmPlaylistImportJob = viewModelScope.launch {
+            _isImportingYtmPlaylists.value = true
+            _ytmImportError.value = null
+            _ytmImportStatusMessage.value = null
+
+            val account = ytmAccountState.value
+            val accountLabel = account.accountHandle?.takeIf { it.isNotBlank() }
+                ?: account.accountName?.takeIf { it.isNotBlank() }
+                ?: ""
+
+            var importedCount = 0
+            try {
+                toImport.forEachIndexed { index, ytmPlaylist ->
+                    _ytmImportProgressText.value = "Importing ${index + 1} of ${toImport.size}…"
+                    val tracks = youTubeMusicService.fetchUserPlaylistTracks(ytmPlaylist)
+                    playlistRepository.importYouTubeMusicPlaylist(
+                        externalPlaylistId = ytmPlaylist.playlistId,
+                        externalBrowseId = ytmPlaylist.browseId,
+                        title = ytmPlaylist.title,
+                        description = ytmPlaylist.subtitle.ifBlank { ytmPlaylist.author },
+                        coverUrl = ytmPlaylist.artworkUri,
+                        tracks = tracks,
+                        accountLabel = accountLabel
+                    )
+                    importedCount++
+                }
+
+                if (importedCount > 0) {
+                    _ytmImportStatusMessage.value = if (importedCount == 1) {
+                        "Imported 1 playlist from YouTube Music"
+                    } else {
+                        "Imported $importedCount playlists from YouTube Music"
+                    }
+                    _selectedYtmPlaylistIds.value = emptySet()
+                    _isYtmPlaylistImportOpen.value = false
+                } else {
+                    _ytmImportError.value = "Could not import selected playlists. Please try again."
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                _ytmImportError.value = e.message?.takeIf { it.isNotBlank() }
+                    ?: "Failed to import playlists from YouTube Music."
+            } finally {
+                _isImportingYtmPlaylists.value = false
+                _ytmImportProgressText.value = null
+            }
+        }
+    }
+
+    fun refreshImportedPlaylist(playlist: UserPlaylist) {
+        if (!playlist.isFromYouTubeMusic || !catalogService.authManager.isSignedIn()) return
+        if (_isRefreshingImportedPlaylist.value) return
+
+        refreshImportedPlaylistJob?.cancel()
+        refreshImportedPlaylistJob = viewModelScope.launch {
+            _isRefreshingImportedPlaylist.value = true
+            try {
+                val cleanId = PlaylistRepository.normalizeYouTubePlaylistId(
+                    playlist.externalPlaylistId.ifBlank { playlist.externalBrowseId }
+                )
+                val browseId = playlist.externalBrowseId.ifBlank {
+                    if (cleanId.isNotBlank()) "VL$cleanId" else ""
+                }
+                if (browseId.isBlank()) return@launch
+
+                val libraryItem = YouTubeMusicLibraryPlaylist(
+                    playlistId = cleanId,
+                    browseId = browseId,
+                    title = playlist.title,
+                    subtitle = playlist.description,
+                    artworkUri = if (PlaylistRepository.isLocalCustomCoverPath(playlist.customCoverImagePath)) {
+                        ""
+                    } else {
+                        playlist.customCoverImagePath
+                    }
+                )
+                val tracks = youTubeMusicService.fetchUserPlaylistTracks(libraryItem)
+                val account = ytmAccountState.value
+                val accountLabel = account.accountHandle?.takeIf { it.isNotBlank() }
+                    ?: account.accountName?.takeIf { it.isNotBlank() }
+                    ?: playlist.sourceAccountLabel
+
+                playlistRepository.importYouTubeMusicPlaylist(
+                    externalPlaylistId = cleanId,
+                    externalBrowseId = browseId,
+                    title = playlist.title,
+                    description = playlist.description,
+                    coverUrl = libraryItem.artworkUri,
+                    tracks = tracks,
+                    accountLabel = accountLabel
+                )
+                _ytmImportStatusMessage.value = "Refreshed \"${playlist.title}\" from YouTube Music"
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                _isRefreshingImportedPlaylist.value = false
+            }
+        }
+    }
+
     fun openAddToPlaylist(track: TrackItem) {
         _trackForAddToPlaylist.value = track
     }
@@ -2615,6 +2890,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 if (isYtmAccountValidated(syncedState)) {
                     _isYtmLoginSheetOpen.value = false
                     _ytmLoginError.value = null
+                    openYtmPlaylistImport()
                 } else {
                     catalogService.signOutYouTubeAccount()
                     _ytmLoginError.value =
@@ -2633,6 +2909,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun signOutYtm() {
+        closeYtmPlaylistImport()
+        _ytmLibraryPlaylists.value = emptyList()
+        _selectedYtmPlaylistIds.value = emptySet()
         ytmSyncJob?.cancel()
         ytmSyncJob = viewModelScope.launch {
             _isSyncingYtmAccount.value = true
@@ -2783,8 +3062,20 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         artistAmbientJob?.cancel()
         artistVideoJob?.cancel()
         widgetDeepLinkJob?.cancel()
-        WidgetSyncBridge.onFavoriteToggleRequested = null
-        WidgetSyncBridge.onRefreshRecommendationsRequested = null
+        if (audioPlayerService.onTrackPlayed === trackPlayedHook) {
+            audioPlayerService.onTrackPlayed = null
+        }
+        if (audioPlayerService.fallbackSimilarTracksProvider === similarTracksFallbackHook) {
+            audioPlayerService.fallbackSimilarTracksProvider = null
+        }
+        if (WidgetSyncBridge.onFavoriteToggleRequested === widgetFavoriteToggleHook) {
+            WidgetSyncBridge.onFavoriteToggleRequested = null
+        }
+        if (WidgetSyncBridge.onRefreshRecommendationsRequested === widgetRefreshRecommendationsHook) {
+            WidgetSyncBridge.onRefreshRecommendationsRequested = null
+        }
+        catalogService.release()
+        musicDownloadService.release()
         audioOutputHelper.release()
     }
 }

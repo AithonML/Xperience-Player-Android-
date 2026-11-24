@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BrightnessAuto
@@ -141,6 +142,7 @@ fun SettingsSheet(
     onSignInYtmClick: () -> Unit = {},
     onSignOutYtmClick: () -> Unit = {},
     onForceSyncYtmClick: () -> Unit = {},
+    onImportYtmPlaylistsClick: () -> Unit = {},
     // App Updates State
     autoCheckUpdates: Boolean = true,
     onToggleAutoCheckUpdates: (Boolean) -> Unit = {},
@@ -235,7 +237,8 @@ fun SettingsSheet(
                 appColors = appColors,
                 onSignInClick = onSignInYtmClick,
                 onSignOutClick = onSignOutYtmClick,
-                onForceSyncClick = onForceSyncYtmClick
+                onForceSyncClick = onForceSyncYtmClick,
+                onImportPlaylistsClick = onImportYtmPlaylistsClick
             )
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -1125,7 +1128,8 @@ private fun YouTubeMusicAccountSection(
     appColors: AppThemeColors,
     onSignInClick: () -> Unit,
     onSignOutClick: () -> Unit,
-    onForceSyncClick: () -> Unit
+    onForceSyncClick: () -> Unit,
+    onImportPlaylistsClick: () -> Unit = {}
 ) {
     Text(
         text = "YouTube Music Account",
@@ -1314,6 +1318,39 @@ private fun YouTubeMusicAccountSection(
                         fontSize = 13.sp
                     )
                 }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (appColors.isDark) Color(0x1FFF2D55) else Color(0x14D90429))
+                    .border(
+                        1.dp,
+                        if (appColors.isDark) Color(0x55FF2D55) else Color(0x40D90429),
+                        RoundedCornerShape(12.dp)
+                    )
+                    .clickable(enabled = !isSyncing, onClick = onImportPlaylistsClick)
+                    .padding(vertical = 10.dp, horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.PlaylistPlay,
+                    contentDescription = "Import YouTube Music Playlists",
+                    tint = if (appColors.isDark) Color(0xFFFF4D6D) else Color(0xFFD90429),
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Import YouTube Music Playlists",
+                    color = if (appColors.isDark) Color(0xFFFF4D6D) else Color(0xFFD90429),
+                    fontFamily = GoogleSans,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp
+                )
             }
         } else {
             Row(

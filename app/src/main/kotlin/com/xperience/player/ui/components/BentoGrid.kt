@@ -238,6 +238,13 @@ fun BentoGrid(
                             is BentoColumn.ThreeCards -> "three_${col.top.id}_${col.middle.id}_${col.bottom.id}_$index"
                             is BentoColumn.SingleCard -> "single_${col.track.id}_$index"
                         }
+                    },
+                    contentType = { _, col ->
+                        when (col) {
+                            is BentoColumn.TwoCards -> "bento_two"
+                            is BentoColumn.ThreeCards -> "bento_three"
+                            is BentoColumn.SingleCard -> "bento_single"
+                        }
                     }
                 ) { columnIndex, column ->
                     Column(

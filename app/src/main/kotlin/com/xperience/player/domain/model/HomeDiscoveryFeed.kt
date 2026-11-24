@@ -36,6 +36,16 @@ data class RecommendedPlaylistItem(
     val trackCountText: String? = null
 )
 
+data class YouTubeMusicLibraryPlaylist(
+    val playlistId: String,
+    val browseId: String,
+    val title: String,
+    val subtitle: String = "",
+    val artworkUri: String = "",
+    val author: String = "",
+    val trackCountText: String = ""
+)
+
 data class RadioStationItem(
     val id: String,
     val title: String,

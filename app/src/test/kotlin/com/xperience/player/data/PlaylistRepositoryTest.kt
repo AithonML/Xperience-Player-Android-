@@ -75,4 +75,115 @@ class PlaylistRepositoryTest {
         assertTrue(playlist.hasCustomCover)
         assertEquals("content://media/external/images/media/999", playlist.customCoverImagePath)
     }
+
+    @Test
+    fun testSerializeAndParseYouTubeMusicMetadataRoundTrip() {
+        val track = TrackItem(
+            id = "ytm_dQw4w9WgXcQ",
+            title = "Never Gonna Give You Up",
+            artist = "Rick Astley",
+            album = "Whenever You Need Somebody",
+            durationMs = 213_000L,
+            artworkUri = "https://lh3.googleusercontent.com/cover=w544-h544",
+            audioUrl = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        )
+        val imported = UserPlaylist(
+            id = "pl_ytm_1",
+            title = "Road Trip",
+            description = "My YTM Mix",
+            customCoverImagePath = "https://lh3.googleusercontent.com/pl=w544-h544",
+            tracks = listOf(track),
+            source = UserPlaylist.SOURCE_YOUTUBE_MUSIC,
+            externalPlaylistId = "PL1234567890",
+            externalBrowseId = "VLPL1234567890",
+            sourceAccountLabel = "@testuser",
+            importedAt = "2026-11-24T08:00:00.000Z"
+        )
+
+        val json = PlaylistRepository.serializePlaylistsToJson(listOf(imported))
+        val parsed = PlaylistRepository.parsePlaylistsJson(json)
+
+        assertEquals(1, parsed.size)
+        val roundTripped = parsed[0]
+        assertTrue(roundTripped.isFromYouTubeMusic)
+        assertEquals(UserPlaylist.SOURCE_YOUTUBE_MUSIC, roundTripped.source)
+        assertEquals("PL1234567890", roundTripped.externalPlaylistId)
+        assertEquals("VLPL1234567890", roundTripped.externalBrowseId)
+        assertEquals("@testuser", roundTripped.sourceAccountLabel)
+        assertEquals("2026-11-24T08:00:00.000Z", roundTripped.importedAt)
+        assertEquals(1, roundTripped.tracks.size)
+        assertEquals("ytm_dQw4w9WgXcQ", roundTripped.tracks[0].id)
+    }
+
+    @Test
+    fun testLegacyPlaylistJsonWithoutSourceFieldsRemainsLocal() {
+        val legacyJson = """
+            [
+              {
+                "id": "pl_legacy_1",
+                "title": "Local Favorites",
+                "description": "Created locally",
+                "customCoverImagePath": "",
+                "createdAt": "2026-01-01T00:00:00.000Z",
+                "tracks": []
+              }
+            ]
+        """.trimIndent()
+
+        val parsed = PlaylistRepository.parsePlaylistsJson(legacyJson)
+        assertEquals(1, parsed.size)
+        assertFalse(parsed[0].isFromYouTubeMusic)
+        assertEquals("", parsed[0].source)
+        assertEquals("", parsed[0].externalPlaylistId)
+    }
+
+    @Test
+    fun testUpsertImportedYouTubePlaylistCreatesUpdatesAndPreservesLocalCover() {
+        val localPlaylist = UserPlaylist(id = "pl_local", title = "Local Mix")
+        val track1 = TrackItem(id = "ytm_aaa11111111", title = "Track 1", artist = "A1", album = "Al1")
+        val track2 = TrackItem(id = "ytm_bbb22222222", title = "Track 2", artist = "A2", album = "Al2")
+
+        // First import prepends new YTM playlist
+        val (afterInsert, created) = PlaylistRepository.upsertImportedYouTubePlaylist(
+            existing = listOf(localPlaylist),
+            externalPlaylistId = "VLPLabc123",
+            externalBrowseId = "VLPLabc123",
+            title = "YTM Chill",
+            description = "First import",
+            coverUrl = "https://lh3.googleusercontent.com/cover1",
+            tracks = listOf(track1),
+            accountLabel = "@alice",
+            importedAt = "2026-11-24T08:00:00.000Z"
+        )
+
+        assertEquals(2, afterInsert.size)
+        assertEquals(created.id, afterInsert[0].id)
+        assertTrue(created.isFromYouTubeMusic)
+        assertEquals("PLabc123", created.externalPlaylistId)
+        assertEquals("VLPLabc123", created.externalBrowseId)
+
+        // Simulate user setting a local custom gallery cover on the imported playlist
+        val withLocalCover = afterInsert.map {
+            if (it.id == created.id) it.copy(customCoverImagePath = "content://media/external/images/42") else it
+        }
+
+        // Re-import with same ID (case-insensitive) updates in-place without duplicating and keeps local cover
+        val (afterUpdate, updated) = PlaylistRepository.upsertImportedYouTubePlaylist(
+            existing = withLocalCover,
+            externalPlaylistId = "plabc123",
+            externalBrowseId = "VLplabc123",
+            title = "YTM Chill Updated",
+            description = "Synced",
+            coverUrl = "https://lh3.googleusercontent.com/cover2",
+            tracks = listOf(track1, track2),
+            accountLabel = "@alice",
+            importedAt = "2026-11-24T09:00:00.000Z"
+        )
+
+        assertEquals(2, afterUpdate.size)
+        assertEquals(created.id, updated.id)
+        assertEquals("YTM Chill Updated", updated.title)
+        assertEquals(2, updated.tracks.size)
+        assertEquals("content://media/external/images/42", updated.customCoverImagePath)
+    }
 }

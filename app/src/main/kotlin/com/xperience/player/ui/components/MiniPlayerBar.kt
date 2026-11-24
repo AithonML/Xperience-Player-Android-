@@ -40,6 +40,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -93,7 +94,8 @@ fun MiniPlayerBar(
     onMiniPlayerClick: () -> Unit,
     isLiked: Boolean = false,
     onToggleFavorite: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long>? = null
 ) {
     val track = playbackState.currentTrack
     val glassConfig = LocalGlassEffectConfig.current
@@ -323,29 +325,17 @@ fun MiniPlayerBar(
                             }
                         }
 
-                        // Bottom dynamic progress bar
-                        val animatedProgress by animateFloatAsState(
-                            targetValue = playbackState.progressFraction,
-                            animationSpec = tween(durationMillis = 300),
-                            label = "miniPlayerProgress"
-                        )
-
-                        Box(
+                        // Bottom dynamic progress bar (leaf collecting playbackPositionMsFlow without recomposing MiniPlayerBar)
+                        MiniPlayerBottomProgressBar(
+                            playbackPositionMsFlow = playbackPositionMsFlow,
+                            fallbackFraction = playbackState.progressFraction,
+                            durationMs = playbackState.durationMs,
+                            accentColor = accentColor,
                             modifier = Modifier
                                 .align(Alignment.BottomStart)
                                 .padding(start = 58.dp, end = 16.dp, bottom = 4.dp)
-                                .fillMaxWidth(animatedProgress)
+                                .fillMaxWidth()
                                 .height(2.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.horizontalGradient(
-                                        listOf(
-                                            accentColor,
-                                            accentColor.copy(alpha = 0.85f),
-                                            accentColor.copy(alpha = 0.45f)
-                                        )
-                                    )
-                                )
                         )
                     } else {
                         // CONTRACTED COMPACT MINI PLAYER (Thumbnail + Play/Pause Pulse)
@@ -602,6 +592,41 @@ fun MiniPlayerBar(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun MiniPlayerBottomProgressBar(
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long>?,
+    fallbackFraction: Float,
+    durationMs: Long,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val positionState = playbackPositionMsFlow?.collectAsState()
+    val safeDurationMs = durationMs.coerceAtLeast(0L)
+    val brush = remember(accentColor) {
+        Brush.horizontalGradient(
+            listOf(
+                accentColor,
+                accentColor.copy(alpha = 0.85f),
+                accentColor.copy(alpha = 0.45f)
+            )
+        )
+    }
+    androidx.compose.foundation.Canvas(modifier = modifier.clip(CircleShape)) {
+        val progress = if (positionState != null && safeDurationMs > 0L) {
+            (positionState.value.coerceAtLeast(0L).toFloat() / safeDurationMs.toFloat()).coerceIn(0f, 1f)
+        } else {
+            fallbackFraction.coerceIn(0f, 1f)
+        }
+        val activeW = size.width * progress
+        if (activeW > 0.5f) {
+            drawRect(
+                brush = brush,
+                size = androidx.compose.ui.geometry.Size(activeW, size.height)
+            )
         }
     }
 }

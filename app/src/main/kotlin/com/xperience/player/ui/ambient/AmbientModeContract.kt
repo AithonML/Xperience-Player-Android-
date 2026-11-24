@@ -45,7 +45,7 @@ data class AmbientModeUiState(
     val lyrics: List<LyricLine> = emptyList(),
     val lyricsProviderName: String? = null,
     val canvasArtwork: CanvasArtworkResult? = null,
-    val selectedVisualizer: VisualizerDefinition = VisualizerRepository.BuiltInPresets.first(),
+    val selectedVisualizer: VisualizerDefinition = VisualizerRepository.DefaultPreset,
     val availableVisualizers: List<VisualizerDefinition> = VisualizerRepository.BuiltInPresets,
     val auroraColors: AuroraColors = DEFAULT_AURORA_COLORS,
     val outputDeviceName: String = "Device Speaker",

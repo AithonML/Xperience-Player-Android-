@@ -24,6 +24,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -38,6 +39,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -56,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -140,9 +144,11 @@ import com.xperience.player.ui.library.LibrarySubView
 import com.xperience.player.ui.liked.LikedScreen
 import com.xperience.player.ui.playlists.AddToPlaylistSheet
 import com.xperience.player.ui.playlists.CreatePlaylistDialog
+import com.xperience.player.ui.playlists.ImportYouTubePlaylistsSheet
 import com.xperience.player.ui.playlists.PlaylistDetailScreen
 import com.xperience.player.ui.playlists.PlaylistsEmptyDetailPane
 import com.xperience.player.ui.playlists.PlaylistsScreen
+import com.xperience.player.ui.playlists.RemovePlaylistDialog
 import com.xperience.player.ui.components.TrackOptionsMenuSheet
 import com.xperience.player.ui.player.DownloadConfirmationModal
 import com.xperience.player.ui.player.NowPlayingScreen
@@ -217,6 +223,16 @@ fun HomeScreen(
     val isYtmLoginSheetOpen by viewModel.isYtmLoginSheetOpen.collectAsState()
     val isSyncingYtmAccount by viewModel.isSyncingYtmAccount.collectAsState()
     val ytmLoginError by viewModel.ytmLoginError.collectAsState()
+    val isYtmPlaylistImportOpen by viewModel.isYtmPlaylistImportOpen.collectAsState()
+    val isLoadingYtmLibraryPlaylists by viewModel.isLoadingYtmLibraryPlaylists.collectAsState()
+    val ytmLibraryPlaylists by viewModel.ytmLibraryPlaylists.collectAsState()
+    val selectedYtmPlaylistIds by viewModel.selectedYtmPlaylistIds.collectAsState()
+    val isImportingYtmPlaylists by viewModel.isImportingYtmPlaylists.collectAsState()
+    val ytmImportProgressText by viewModel.ytmImportProgressText.collectAsState()
+    val ytmImportError by viewModel.ytmImportError.collectAsState()
+    val ytmImportStatusMessage by viewModel.ytmImportStatusMessage.collectAsState()
+    val playlistPendingDelete by viewModel.playlistPendingDelete.collectAsState()
+    val isRefreshingImportedPlaylist by viewModel.isRefreshingImportedPlaylist.collectAsState()
     val homeGridCategory by viewModel.homeGridCategory.collectAsState()
     val isHomeGridOpen = homeGridCategory != null
     var lastHomeGridCategory by remember { mutableStateOf(homeGridCategory) }
@@ -315,7 +331,7 @@ fun HomeScreen(
     val trackForAddToPlaylist by viewModel.trackForAddToPlaylist.collectAsState()
     val trackForOptionsMenu by viewModel.trackForOptionsMenu.collectAsState()
 
-    val scrollState = rememberScrollState()
+    val homeListState = rememberLazyListState()
 
     var predictiveBackProgress by remember { mutableFloatStateOf(0f) }
 
@@ -591,7 +607,7 @@ fun HomeScreen(
                 effectiveArtistProgress = effectiveArtistProgress,
                 effectivePlaylistProgress = effectivePlaylistProgress,
                 effectiveGridProgress = effectiveGridProgress
-            )
+            ) || isPlayerExpanded || playerExpandProgress > 0.001f || isAmbientModeOpen || isSettingsOpen
             val overlayFreezeRef = remember { BooleanArray(1) }
             overlayFreezeRef[0] = overlayFreezeActive
             val isAppBackdropFrozen = remember(backdropFreeze, overlayFreezeRef) {
@@ -604,74 +620,81 @@ fun HomeScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer()
                     .layerBackdrop(
                         appBackdrop,
                         frozen = isAppBackdropFrozen
                     )
-                    .graphicsLayer()
                     .nestedScroll(backdropFreeze.connection)
             ) {
                 Box(modifier = Modifier.fillMaxSize().zIndex(0f)) {
                     when (selectedTab) {
                             NavigationTab.Home -> {
+                                val showYtmBanner = shouldDisplayYtmLoginBanner(
+                                    accountState = ytmAccountState,
+                                    shouldShowPrompt = shouldShowYtmLoginPrompt
+                                )
+                                val homeSmartPlaylists = smartSuggestedPlaylists.ifEmpty { feed.smartSuggestedPlaylists }
+                                val moreLikeSections = remember(feed.moreLikeSections) {
+                                    feed.moreLikeSections.filter { it.albums.isNotEmpty() }
+                                }
+                                val moreLike1 = moreLikeSections.getOrNull(0)
+                                val moreLike2 = moreLikeSections.getOrNull(1)
+                                val moreLike3 = moreLikeSections.getOrNull(2)
+
                                 Box(modifier = Modifier.fillMaxSize()) {
                                     HomeAuroraBackground(
                                         auroraColors = auroraColors,
                                         isDark = isDarkTheme,
-                                        scrollOffsetPxProvider = { scrollState.value },
+                                        scrollOffsetPxProvider = {
+                                            if (homeListState.firstVisibleItemIndex > 0) 2000
+                                            else homeListState.firstVisibleItemScrollOffset
+                                        },
+                                        isVisible = !isPlayerExpanded && !isAmbientModeOpen && overlayStack.isEmpty(),
                                         modifier = Modifier.align(Alignment.TopCenter)
                                     )
 
-                                    // Scrollable Catalog Content Layer
-                                    Column(
+                                    // Scrollable Catalog Content Layer (virtualized LazyColumn)
+                                    LazyColumn(
+                                        state = homeListState,
+                                        contentPadding = PaddingValues(
+                                            top = topChromePadding,
+                                            bottom = bottomChromePadding
+                                        ),
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .nestedScroll(scrollConnection)
-                                            .verticalScroll(scrollState)
                                             .statusBarsPadding()
-                                            .padding(top = topChromePadding)
                                     ) {
-                                        HeaderBar(
-                                            showBrandBadge = !usesTopDesktopChrome,
-                                            onRefreshClick = if (usesTopDesktopChrome) {
-                                                { viewModel.refreshHomeFeed() }
-                                            } else {
-                                                null
-                                            }
-                                        )
+                                        item(key = "home_header", contentType = "header") {
+                                            HeaderBar(
+                                                showBrandBadge = !usesTopDesktopChrome,
+                                                onRefreshClick = if (usesTopDesktopChrome) {
+                                                    { viewModel.refreshHomeFeed() }
+                                                } else {
+                                                    null
+                                                }
+                                            )
+                                        }
 
-                                        val showYtmBanner = shouldDisplayYtmLoginBanner(
-                                            accountState = ytmAccountState,
-                                            shouldShowPrompt = shouldShowYtmLoginPrompt
-                                        )
-
-                                        AnimatedVisibility(
-                                            visible = showYtmBanner,
-                                            enter = expandVertically(animationSpec = tween(260)) + fadeIn(animationSpec = tween(220)),
-                                            exit = shrinkVertically(animationSpec = tween(220)) + fadeOut(animationSpec = tween(180))
-                                        ) {
-                                            Column(modifier = Modifier.fillMaxWidth()) {
-                                                Spacer(modifier = Modifier.height(12.dp))
-                                                YtmLoginPromptBanner(
-                                                    onSignInClick = { viewModel.openYtmLogin() },
-                                                    onLaterClick = { viewModel.remindYtmLoginLater() },
-                                                    onDismissClick = { viewModel.dismissYtmLoginPrompt() }
-                                                )
+                                        item(key = "ytm_login_banner", contentType = "banner") {
+                                            androidx.compose.animation.AnimatedVisibility(
+                                                visible = showYtmBanner,
+                                                enter = expandVertically(animationSpec = tween(260)) + fadeIn(animationSpec = tween(220)),
+                                                exit = shrinkVertically(animationSpec = tween(220)) + fadeOut(animationSpec = tween(180))
+                                            ) {
+                                                Column(modifier = Modifier.fillMaxWidth()) {
+                                                    Spacer(modifier = Modifier.height(12.dp))
+                                                    YtmLoginPromptBanner(
+                                                        onSignInClick = { viewModel.openYtmLogin() },
+                                                        onLaterClick = { viewModel.remindYtmLoginLater() },
+                                                        onDismissClick = { viewModel.dismissYtmLoginPrompt() }
+                                                    )
+                                                }
                                             }
                                         }
 
-                                        AnimatedContent(
-                                            targetState = feed.isFeedLoading,
-                                            transitionSpec = {
-                                                (fadeIn(animationSpec = tween(320)) + scaleIn(
-                                                    initialScale = 0.985f,
-                                                    animationSpec = tween(320)
-                                                )) togetherWith fadeOut(animationSpec = tween(220))
-                                            },
-                                            label = "homeFeedSkeletonTransition"
-                                        ) { isLoading ->
-                                            if (isLoading) {
+                                        if (feed.isFeedLoading) {
+                                            item(key = "home_skeleton", contentType = "skeleton") {
                                                 Column(modifier = Modifier.fillMaxWidth()) {
                                                     if (showYtmBanner) {
                                                         Spacer(modifier = Modifier.height(8.dp))
@@ -680,161 +703,187 @@ fun HomeScreen(
                                                         modifier = Modifier.fillMaxWidth()
                                                     )
                                                 }
-                                            } else {
-                                                Column(modifier = Modifier.fillMaxWidth()) {
-                                                    // 1. Top Picks For You
-                                        if (feed.topPicks.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(if (showYtmBanner) 20.dp else 10.dp))
-
-                                            TopPicksSection(
-                                                items = feed.topPicks,
-                                                onTopPickClick = { item -> viewModel.onTopPickClick(item) }
-                                            )
-
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            }
                                         } else {
-                                            Spacer(modifier = Modifier.height(if (showYtmBanner) 18.dp else 10.dp))
-                                        }
+                                            // 1. Top Picks For You
+                                            if (feed.topPicks.isNotEmpty()) {
+                                                item(key = "top_picks", contentType = "top_picks") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(if (showYtmBanner) 20.dp else 10.dp))
+                                                        TopPicksSection(
+                                                            items = feed.topPicks,
+                                                            onTopPickClick = { item -> viewModel.onTopPickClick(item) }
+                                                        )
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                    }
+                                                }
+                                            } else {
+                                                item(key = "top_picks_spacer", contentType = "spacer") {
+                                                    Spacer(modifier = Modifier.height(if (showYtmBanner) 18.dp else 10.dp))
+                                                }
+                                            }
 
-                                        // 2. Recently Played (Bento Grid)
-                                        BentoGrid(
-                                            tracks = feed.recentlyPlayedTracks,
-                                            onAlbumClick = { album -> viewModel.onAlbumClicked(album) },
-                                            onAddFolderClick = { viewModel.openSettings() }
-                                        )
+                                            // 2. Recently Played (Bento Grid)
+                                            item(key = "bento_grid", contentType = "bento_grid") {
+                                                BentoGrid(
+                                                    tracks = feed.recentlyPlayedTracks,
+                                                    onAlbumClick = { album -> viewModel.onAlbumClicked(album) },
+                                                    onAddFolderClick = { viewModel.openSettings() }
+                                                )
+                                            }
 
-                                        // 2B. Auto-Generated Smart Playlists ("Sugerencias para ti")
-                                        val homeSmartPlaylists = smartSuggestedPlaylists.ifEmpty { feed.smartSuggestedPlaylists }
-                                        if (homeSmartPlaylists.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            // 2B. Auto-Generated Smart Playlists ("Sugerencias para ti")
+                                            if (homeSmartPlaylists.isNotEmpty()) {
+                                                item(key = "smart_playlists", contentType = "smart_playlists") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        SmartSuggestedPlaylistsSection(
+                                                            playlists = homeSmartPlaylists,
+                                                            savedPlaylistTitles = savedPlaylistTitles,
+                                                            onPlaylistClick = { playlist -> viewModel.openPlaylistDetail(playlist) },
+                                                            onPlayPlaylistClick = { playlist -> viewModel.playPlaylistTracks(playlist, 0) },
+                                                            onSavePlaylistClick = { playlist -> viewModel.saveSuggestedPlaylistToLibrary(playlist) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                            SmartSuggestedPlaylistsSection(
-                                                playlists = homeSmartPlaylists,
-                                                savedPlaylistTitles = savedPlaylistTitles,
-                                                onPlaylistClick = { playlist -> viewModel.openPlaylistDetail(playlist) },
-                                                onPlayPlaylistClick = { playlist -> viewModel.playPlaylistTracks(playlist, 0) },
-                                                onSavePlaylistClick = { playlist -> viewModel.saveSuggestedPlaylistToLibrary(playlist) }
-                                            )
-                                        }
+                                            // 3. More like #1
+                                            if (moreLike1 != null) {
+                                                item(key = "more_like_0", contentType = "more_like_row") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        MoreLikeAlbumSectionRow(
+                                                            section = moreLike1,
+                                                            onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                        val moreLikeSections = remember(feed.moreLikeSections) {
-                                            feed.moreLikeSections.filter { it.albums.isNotEmpty() }
-                                        }
-                                        val moreLike1 = moreLikeSections.getOrNull(0)
-                                        val moreLike2 = moreLikeSections.getOrNull(1)
-                                        val moreLike3 = moreLikeSections.getOrNull(2)
+                                            // 4. Related Artists For You
+                                            if (feed.relatedArtists.isNotEmpty()) {
+                                                item(key = "related_artists", contentType = "related_artists") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        RelatedArtistsRow(
+                                                            artists = feed.relatedArtists,
+                                                            onArtistClick = { artist -> viewModel.onArtistClicked(artist) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                        // 3. More like #1
-                                        if (moreLike1 != null) {
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            // 5. Playlists Made For You
+                                            if (feed.playlistsMadeForYou.isNotEmpty()) {
+                                                item(key = "playlists_made_for_you", contentType = "playlists_row") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        PlaylistsMadeForYouSection(
+                                                            playlists = feed.playlistsMadeForYou,
+                                                            onPlaylistClick = { item -> viewModel.onRecommendedPlaylistClick(item) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                            MoreLikeAlbumSectionRow(
-                                                section = moreLike1,
-                                                onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
-                                            )
-                                        }
+                                            // 6. More like #2
+                                            if (moreLike2 != null) {
+                                                item(key = "more_like_1", contentType = "more_like_row") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        MoreLikeAlbumSectionRow(
+                                                            section = moreLike2,
+                                                            onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                        // 4. Related Artists For You
-                                        if (feed.relatedArtists.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            // 7. Estaciones de Radio
+                                            if (feed.radioStations.isNotEmpty()) {
+                                                item(key = "radio_stations", contentType = "radio_stations") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        RadioStationsSection(
+                                                            stations = feed.radioStations,
+                                                            onStationClick = { station -> viewModel.onRadioStationClick(station) },
+                                                            onSeeMoreClick = { viewModel.openHomeGrid(HomeGridCategory.RADIO_STATIONS) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                            RelatedArtistsRow(
-                                                artists = feed.relatedArtists,
-                                                onArtistClick = { artist -> viewModel.onArtistClicked(artist) }
-                                            )
-                                        }
+                                            // 8. Recommended Songs (YouTube Music Powered)
+                                            if (feed.recommendedTracks.isNotEmpty()) {
+                                                item(key = "recommended_songs", contentType = "recommended_songs") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        RecommendedSongsSection(
+                                                            tracks = feed.recommendedTracks,
+                                                            likedTrackIds = likedTrackIds,
+                                                            onToggleFavorite = { track -> viewModel.toggleFavorite(track) },
+                                                            onTrackClick = { track -> viewModel.onSearchTrackClicked(track) },
+                                                            onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                        // 5. Playlists Made For You
-                                        if (feed.playlistsMadeForYou.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            // 9. Novedades
+                                            if (feed.newReleases.isNotEmpty()) {
+                                                item(key = "new_releases", contentType = "new_releases") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        NovedadesSection(
+                                                            releases = feed.newReleases,
+                                                            onReleaseClick = { release -> viewModel.onNewReleaseClick(release) },
+                                                            onSeeMoreClick = { viewModel.openHomeGrid(HomeGridCategory.NOVEDADES) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                            PlaylistsMadeForYouSection(
-                                                playlists = feed.playlistsMadeForYou,
-                                                onPlaylistClick = { item -> viewModel.onRecommendedPlaylistClick(item) }
-                                            )
-                                        }
+                                            // 10. More like #3
+                                            if (moreLike3 != null) {
+                                                item(key = "more_like_2", contentType = "more_like_row") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        MoreLikeAlbumSectionRow(
+                                                            section = moreLike3,
+                                                            onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                        // 6. More like #2
-                                        if (moreLike2 != null) {
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            // 11. Recommended Albums (YouTube Music Powered)
+                                            if (feed.recommendedAlbums.isNotEmpty()) {
+                                                item(key = "recommended_albums", contentType = "recommended_albums") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        RecommendedAlbumsSection(
+                                                            albums = feed.recommendedAlbums,
+                                                            onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                            MoreLikeAlbumSectionRow(
-                                                section = moreLike2,
-                                                onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
-                                            )
-                                        }
-
-                                        // 7. Estaciones de Radio
-                                        if (feed.radioStations.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            RadioStationsSection(
-                                                stations = feed.radioStations,
-                                                onStationClick = { station -> viewModel.onRadioStationClick(station) },
-                                                onSeeMoreClick = { viewModel.openHomeGrid(HomeGridCategory.RADIO_STATIONS) }
-                                            )
-                                        }
-
-                                        // 8. Recommended Songs (YouTube Music Powered)
-                                        if (feed.recommendedTracks.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            RecommendedSongsSection(
-                                                tracks = feed.recommendedTracks,
-                                                likedTrackIds = likedTrackIds,
-                                                onToggleFavorite = { track -> viewModel.toggleFavorite(track) },
-                                                onTrackClick = { track -> viewModel.onSearchTrackClicked(track) },
-                                                onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) }
-                                            )
-                                        }
-
-                                        // 9. Novedades
-                                        if (feed.newReleases.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            NovedadesSection(
-                                                releases = feed.newReleases,
-                                                onReleaseClick = { release -> viewModel.onNewReleaseClick(release) },
-                                                onSeeMoreClick = { viewModel.openHomeGrid(HomeGridCategory.NOVEDADES) }
-                                            )
-                                        }
-
-                                        // 10. More like #3
-                                        if (moreLike3 != null) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            MoreLikeAlbumSectionRow(
-                                                section = moreLike3,
-                                                onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
-                                            )
-                                        }
-
-                                        // 11. Recommended Albums (YouTube Music Powered)
-                                        if (feed.recommendedAlbums.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            RecommendedAlbumsSection(
-                                                albums = feed.recommendedAlbums,
-                                                onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
-                                            )
-                                        }
-
-                                        // 12. Discover by Genre (Dynamic Filters & Tracks from YouTube Music)
-                                        if (feed.genreTags.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            DiscoverByGenreSection(
-                                                genres = feed.genreTags,
-                                                selectedGenre = feed.selectedGenreTag,
-                                                genreTracks = feed.genreTracks,
-                                                onGenreSelect = { genre -> viewModel.onGenreSelected(genre) },
-                                                onTrackClick = { track -> viewModel.onSearchTrackClicked(track) },
-                                                onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) }
-                                            )
-                                        }
-
-                                        // Bottom clearance so content scrolls completely clear of floating LiquidGlass capsules
-                                        Spacer(modifier = Modifier.height(bottomChromePadding))
+                                            // 12. Discover by Genre (Dynamic Filters & Tracks from YouTube Music)
+                                            if (feed.genreTags.isNotEmpty()) {
+                                                item(key = "discover_by_genre", contentType = "discover_by_genre") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        DiscoverByGenreSection(
+                                                            genres = feed.genreTags,
+                                                            selectedGenre = feed.selectedGenreTag,
+                                                            genreTracks = feed.genreTracks,
+                                                            onGenreSelect = { genre -> viewModel.onGenreSelected(genre) },
+                                                            onTrackClick = { track -> viewModel.onSearchTrackClicked(track) },
+                                                            onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) }
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -943,6 +992,11 @@ fun HomeScreen(
                                                         viewModel.saveSuggestedPlaylistToLibrary(playlist)
                                                     },
                                                     onCreatePlaylistClick = { viewModel.openCreatePlaylistDialog() },
+                                                    isYtmSignedIn = ytmAccountState.isSignedIn,
+                                                    onImportYtmPlaylistsClick = { viewModel.openYtmPlaylistImport() },
+                                                    onRequestDeletePlaylist = { playlist -> viewModel.requestDeletePlaylist(playlist) },
+                                                    statusMessage = ytmImportStatusMessage,
+                                                    onDismissStatusMessage = { viewModel.dismissYtmImportStatusMessage() },
                                                     auroraColors = auroraColors,
                                                     applyStatusBarsPadding = true,
                                                     modifier = Modifier
@@ -981,7 +1035,10 @@ fun HomeScreen(
                                                         onToggleFavorite = { track -> viewModel.toggleFavorite(track.id, fallback = track) },
                                                         onRemoveTrack = { track -> viewModel.removeTrackFromPlaylist(activeInlinePlaylist.id, track.id) },
                                                         onEditPlaylistClick = { viewModel.openCreatePlaylistDialog(activeInlinePlaylist) },
-                                                        onDeletePlaylistClick = { viewModel.deletePlaylist(activeInlinePlaylist.id) },
+                                                        onDeletePlaylistClick = { viewModel.requestDeletePlaylist(activeInlinePlaylist) },
+                                                        isYtmSignedIn = ytmAccountState.isSignedIn,
+                                                        isRefreshingImportedPlaylist = isRefreshingImportedPlaylist,
+                                                        onRefreshImportedPlaylistClick = { viewModel.refreshImportedPlaylist(activeInlinePlaylist) },
                                                         auroraColors = auroraColors,
                                                         onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) },
                                                         onTrackMoreClick = { track -> viewModel.openTrackOptions(track) },
@@ -1003,6 +1060,11 @@ fun HomeScreen(
                                         onPlayPlaylistClick = { playlist -> viewModel.playPlaylistTracks(playlist) },
                                         onSaveSuggestedPlaylist = { playlist -> viewModel.saveSuggestedPlaylistToLibrary(playlist) },
                                         onCreatePlaylistClick = { viewModel.openCreatePlaylistDialog() },
+                                        isYtmSignedIn = ytmAccountState.isSignedIn,
+                                        onImportYtmPlaylistsClick = { viewModel.openYtmPlaylistImport() },
+                                        onRequestDeletePlaylist = { playlist -> viewModel.requestDeletePlaylist(playlist) },
+                                        statusMessage = ytmImportStatusMessage,
+                                        onDismissStatusMessage = { viewModel.dismissYtmImportStatusMessage() },
                                         auroraColors = auroraColors,
                                         applyStatusBarsPadding = true,
                                         modifier = Modifier
@@ -1221,7 +1283,10 @@ fun HomeScreen(
                                 onToggleFavorite = { track -> viewModel.toggleFavorite(track.id, fallback = track) },
                                 onRemoveTrack = { track -> viewModel.removeTrackFromPlaylist(playlist.id, track.id) },
                                 onEditPlaylistClick = { viewModel.openCreatePlaylistDialog(playlist) },
-                                onDeletePlaylistClick = { viewModel.deletePlaylist(playlist.id) },
+                                onDeletePlaylistClick = { viewModel.requestDeletePlaylist(playlist) },
+                                isYtmSignedIn = ytmAccountState.isSignedIn,
+                                isRefreshingImportedPlaylist = isRefreshingImportedPlaylist,
+                                onRefreshImportedPlaylistClick = { viewModel.refreshImportedPlaylist(playlist) },
                                 auroraColors = auroraColors,
                                 onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) },
                                 onTrackMoreClick = { track -> viewModel.openTrackOptions(track) },
@@ -1294,7 +1359,12 @@ fun HomeScreen(
             }
 
             if (usesTopDesktopChrome) {
-                val isHomeScrolled = selectedTab == NavigationTab.Home && scrollState.value > 12
+                val isHomeScrolled by remember(selectedTab, homeListState) {
+                    derivedStateOf {
+                        selectedTab == NavigationTab.Home &&
+                            (homeListState.firstVisibleItemIndex > 0 || homeListState.firstVisibleItemScrollOffset > 12)
+                    }
+                }
                 val topScrimAlpha by animateFloatAsState(
                     targetValue = when {
                         overlayStack.isNotEmpty() -> if (isDarkTheme) 0.44f else 0.54f
@@ -1365,6 +1435,7 @@ fun HomeScreen(
                     onToggleNowPlayingSidebar = {
                         isNowPlayingSidebarOpen = !isNowPlayingSidebarOpen
                     },
+                    playbackPositionMsFlow = viewModel.playbackPositionMs,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .statusBarsPadding()
@@ -1450,6 +1521,7 @@ fun HomeScreen(
                     onSkipNext = { viewModel.onSkipNext() },
                     onSkipPrevious = { viewModel.onSkipPrevious() },
                     onSeek = { frac -> viewModel.seekTo(frac) },
+                    playbackPositionMsFlow = viewModel.playbackPositionMs,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .widthIn(max = 520.dp)
@@ -1526,6 +1598,7 @@ fun HomeScreen(
                             castState = castState,
                             castRouteCount = castRoutes.size,
                             onOpenCastPicker = { viewModel.onCastButtonClicked() },
+                            playbackPositionMsFlow = viewModel.playbackPositionMs,
                             modifier = Modifier
                                 .width(NowPlayingSidebarDefaults.Width)
                                 .fillMaxHeight()
@@ -1713,7 +1786,8 @@ fun HomeScreen(
                         onSetAsRingtone = { track -> viewModel.openRingtoneEditor(track) },
                         castState = castState,
                         castRouteCount = castRoutes.size,
-                        onOpenCastPicker = { viewModel.onCastButtonClicked() }
+                        onOpenCastPicker = { viewModel.onCastButtonClicked() },
+                        playbackPositionMsFlow = viewModel.playbackPositionMs
                     )
                 }
             }
@@ -1763,6 +1837,7 @@ fun HomeScreen(
                             modifier = Modifier.size(34.dp)
                         )
                     },
+                    playbackPositionMsFlow = viewModel.playbackPositionMs,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -1814,6 +1889,10 @@ fun HomeScreen(
                 },
                 onSignOutYtmClick = { viewModel.signOutYtm() },
                 onForceSyncYtmClick = { viewModel.forceSyncYtm() },
+                onImportYtmPlaylistsClick = {
+                    viewModel.closeSettings()
+                    viewModel.openYtmPlaylistImport()
+                },
                 autoCheckUpdates = autoCheckUpdates,
                 onToggleAutoCheckUpdates = { enabled -> viewModel.setAutoCheckUpdates(enabled) },
                 updateUiState = updateUiState,
@@ -1843,6 +1922,31 @@ fun HomeScreen(
                 },
                 isValidating = isSyncingYtmAccount,
                 validationError = ytmLoginError
+            )
+
+            // Import YouTube Music Playlists Sheet
+            ImportYouTubePlaylistsSheet(
+                isOpen = isYtmPlaylistImportOpen,
+                isLoading = isLoadingYtmLibraryPlaylists,
+                libraryPlaylists = ytmLibraryPlaylists,
+                selectedIds = selectedYtmPlaylistIds,
+                existingLocalPlaylists = playlists,
+                isImporting = isImportingYtmPlaylists,
+                progressText = ytmImportProgressText,
+                errorMessage = ytmImportError,
+                onDismiss = { viewModel.closeYtmPlaylistImport() },
+                onRetry = { viewModel.loadYtmLibraryPlaylists() },
+                onToggleSelection = { id -> viewModel.toggleYtmPlaylistSelection(id) },
+                onSelectAll = { viewModel.selectAllYtmPlaylists() },
+                onClearSelection = { viewModel.clearYtmPlaylistSelection() },
+                onImportClick = { viewModel.importSelectedYtmPlaylists() }
+            )
+
+            // Local-Only Remove / Delete Playlist Confirmation Dialog
+            RemovePlaylistDialog(
+                playlist = playlistPendingDelete,
+                onDismiss = { viewModel.cancelDeletePlaylist() },
+                onConfirm = { viewModel.confirmDeletePlaylist() }
             )
 
             // Download Confirmation & Source Resolution Modal

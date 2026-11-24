@@ -27,6 +27,7 @@ abstract class BaseMusicWidgetProvider : AppWidgetProvider() {
         appWidgetManager: AppWidgetManager,
         appWidgetIds: IntArray
     ) {
+        WidgetUpdater.invalidateActiveWidgetsCache()
         dispatchAsyncUpdate(context, appWidgetIds)
     }
 
@@ -40,7 +41,18 @@ abstract class BaseMusicWidgetProvider : AppWidgetProvider() {
     }
 
     override fun onEnabled(context: Context) {
+        WidgetUpdater.invalidateActiveWidgetsCache()
         dispatchAsyncUpdate(context, null)
+    }
+
+    override fun onDisabled(context: Context) {
+        super.onDisabled(context)
+        WidgetUpdater.invalidateActiveWidgetsCache()
+    }
+
+    override fun onDeleted(context: Context, appWidgetIds: IntArray) {
+        super.onDeleted(context, appWidgetIds)
+        WidgetUpdater.invalidateActiveWidgetsCache()
     }
 
     private fun dispatchAsyncUpdate(context: Context, appWidgetIds: IntArray?) {

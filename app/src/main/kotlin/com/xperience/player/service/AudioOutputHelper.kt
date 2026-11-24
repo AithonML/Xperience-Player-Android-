@@ -17,9 +17,10 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * Manages audio output device detection and triggers the system Output Switcher dialog.
  */
-class AudioOutputHelper(private val context: Context) {
+class AudioOutputHelper(context: Context) {
 
-    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    private val appContext: Context = context.applicationContext
+    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
     private val _currentOutputName = MutableStateFlow(resolveActiveOutputName())
     val currentOutputName: StateFlow<String> = _currentOutputName.asStateFlow()

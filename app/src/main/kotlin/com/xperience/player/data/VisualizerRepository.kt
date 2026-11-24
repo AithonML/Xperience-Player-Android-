@@ -5,46 +5,55 @@ import android.util.Log
 import com.xperience.player.domain.model.visualizer.VisualizerDefinition
 import com.xperience.player.domain.model.visualizer.VisualizerJsonParser
 import com.xperience.player.domain.model.visualizer.VisualizerRenderMode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
  * Manages built-in and user-imported GPU music visualizer presets.
  * Supports persistent storage of custom .xviz.json and .json files.
  */
-class VisualizerRepository(private val context: Context) {
+class VisualizerRepository(context: Context) {
 
-    private val prefs = context.getSharedPreferences("xperience_visualizers_prefs", Context.MODE_PRIVATE)
-    private val visualizersDir = File(context.filesDir, "visualizers").apply {
-        if (!exists()) mkdirs()
+    private val appContext = context.applicationContext
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val prefs by lazy {
+        appContext.getSharedPreferences("xperience_visualizers_prefs", Context.MODE_PRIVATE)
     }
+    private val visualizersDir: File
+        get() = File(appContext.filesDir, "visualizers")
 
-    private val _availableVisualizers = MutableStateFlow<List<VisualizerDefinition>>(emptyList())
+    private val _availableVisualizers = MutableStateFlow<List<VisualizerDefinition>>(BuiltInPresets)
     val availableVisualizers: StateFlow<List<VisualizerDefinition>> = _availableVisualizers.asStateFlow()
 
-    private val _selectedVisualizer = MutableStateFlow<VisualizerDefinition>(BuiltInPresets.first())
+    private val _selectedVisualizer = MutableStateFlow<VisualizerDefinition>(DefaultPreset)
     val selectedVisualizer: StateFlow<VisualizerDefinition> = _selectedVisualizer.asStateFlow()
 
     init {
-        loadVisualizers()
+        ioScope.launch {
+            loadVisualizers()
+        }
     }
 
     fun loadVisualizers() {
         val list = mutableListOf<VisualizerDefinition>()
 
-        // 1. Add 5 official built-in presets
+        // 1. Add official built-in presets
         list.addAll(BuiltInPresets)
 
         // 2. Load bundled asset sample visualizers if any
         try {
-            val assetFiles = context.assets.list("visualizers")
+            val assetFiles = appContext.assets.list("visualizers")
             if (assetFiles != null) {
                 for (assetFile in assetFiles) {
                     if (assetFile.endsWith(".json", ignoreCase = true)) {
                         try {
-                            val content = context.assets.open("visualizers/$assetFile").bufferedReader().use { it.readText() }
+                            val content = appContext.assets.open("visualizers/$assetFile").bufferedReader().use { it.readText() }
                             val def = VisualizerJsonParser.parse(content, isCustomImported = true)
                             if (list.none { it.id.equals(def.id, ignoreCase = true) }) {
                                 list.add(def)
@@ -61,7 +70,9 @@ class VisualizerRepository(private val context: Context) {
 
         // 3. Load user-imported custom files from app internal directory
         try {
-            val userFiles = visualizersDir.listFiles { _, name ->
+            val dir = visualizersDir
+            if (!dir.exists()) dir.mkdirs()
+            val userFiles = dir.listFiles { _, name ->
                 name.endsWith(".json", ignoreCase = true)
             }
             if (userFiles != null) {
@@ -86,11 +97,10 @@ class VisualizerRepository(private val context: Context) {
 
         _availableVisualizers.value = list
 
-        // Restore previously selected visualizer ID
-        val savedId = prefs.getString(PREF_SELECTED_VIZ_ID, BuiltInPresets.first().id)
+        // Restore previously selected visualizer ID (defaults to BackdropOnly / Off)
+        val savedId = prefs.getString(PREF_SELECTED_VIZ_ID, DefaultPreset.id)
         val selected = list.firstOrNull { it.id.equals(savedId, ignoreCase = true) }
-            ?: list.firstOrNull()
-            ?: BuiltInPresets.first()
+            ?: DefaultPreset
 
         _selectedVisualizer.value = selected
     }
@@ -130,8 +140,9 @@ class VisualizerRepository(private val context: Context) {
             )
 
             // Persist to internal storage
+            val dir = visualizersDir.apply { if (!exists()) mkdirs() }
             val safeFileName = "${safeId.replace(Regex("[^a-zA-Z0-9_-]"), "_")}.xviz.json"
-            val targetFile = File(visualizersDir, safeFileName)
+            val targetFile = File(dir, safeFileName)
             targetFile.writeText(VisualizerJsonParser.toJson(normalized))
 
             // Update in-memory list
@@ -173,7 +184,7 @@ class VisualizerRepository(private val context: Context) {
             _availableVisualizers.value = updatedList
 
             if (_selectedVisualizer.value.id.equals(id, ignoreCase = true)) {
-                selectVisualizer(BuiltInPresets.first())
+                selectVisualizer(DefaultPreset)
             }
             return true
         } catch (e: Exception) {
@@ -278,5 +289,9 @@ class VisualizerRepository(private val context: Context) {
                 backgroundDimOpacity = 0.0
             )
         )
+
+        val DefaultPreset: VisualizerDefinition = BuiltInPresets.first {
+            it.renderMode == VisualizerRenderMode.None
+        }
     }
 }

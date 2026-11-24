@@ -12,6 +12,7 @@ import com.xperience.player.domain.model.RecommendedPlaylistItem
 import com.xperience.player.domain.model.TopPickItem
 import com.xperience.player.domain.model.TopPickKind
 import com.xperience.player.domain.model.TrackItem
+import com.xperience.player.domain.model.YouTubeMusicLibraryPlaylist
 import com.xperience.player.domain.model.YtmAccountState
 import com.xperience.player.domain.model.YtmMoodCategory
 import com.xperience.player.domain.model.YtmMoodCategoryDetail
@@ -121,11 +122,11 @@ class YouTubeMusicService(
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val cache = ConcurrentHashMap<String, CatalogQueryResult>()
-    private val streamCache = ConcurrentHashMap<String, ResolvedAudioStream>()
-    private val videoStreamCache = ConcurrentHashMap<String, ResolvedMusicVideo>()
-    private val omvCounterpartCache = ConcurrentHashMap<String, String>()
-    private val atvCounterpartCache = ConcurrentHashMap<String, String>()
+    private val cache = BoundedLruMap<String, CatalogQueryResult>(64)
+    private val streamCache = BoundedLruMap<String, ResolvedAudioStream>(128)
+    private val videoStreamCache = BoundedLruMap<String, ResolvedMusicVideo>(64)
+    private val omvCounterpartCache = BoundedLruMap<String, String>(512)
+    private val atvCounterpartCache = BoundedLruMap<String, String>(2000)
     private val atvCacheLock = Any()
     @Volatile private var atvCounterpartCacheFile: File? = atvCacheFileOverride
     @Volatile private var audioCacheDir: File? = audioCacheDirOverride
@@ -155,12 +156,23 @@ class YouTubeMusicService(
                 clockMs = clockMs
             )
         }
-        ensureAtvCounterpartCacheLoaded()
+        if (!atvCacheLoaded) {
+            serviceScope.launch(Dispatchers.IO) {
+                ensureAtvCounterpartCacheLoaded()
+            }
+        }
     }
 
     fun getAtvCounterpartSnapshot(): Map<String, String> {
-        ensureAtvCounterpartCacheLoaded()
-        return atvCounterpartCache.toMap()
+        if (!atvCacheLoaded) {
+            val isMainThread = runCatching {
+                android.os.Looper.myLooper() == android.os.Looper.getMainLooper()
+            }.getOrDefault(false)
+            if (!isMainThread) {
+                ensureAtvCounterpartCacheLoaded()
+            }
+        }
+        return atvCounterpartCache.snapshot()
     }
 
     private fun ensureAtvCounterpartCacheLoaded() {
@@ -188,7 +200,7 @@ class YouTubeMusicService(
         runCatching {
             file.parentFile?.mkdirs()
             val json = JSONObject()
-            atvCounterpartCache.forEach { (k, v) -> json.put(k, v) }
+            atvCounterpartCache.entriesSnapshot().forEach { (k, v) -> json.put(k, v) }
             val tmp = File(file.parentFile, "${file.name}.tmp")
             tmp.writeText(json.toString())
             if (!tmp.renameTo(file)) {
@@ -199,13 +211,13 @@ class YouTubeMusicService(
             safeLog("Failed to persist ATV counterpart cache", it)
         }
     }
-    private val searchFilterCache = ConcurrentHashMap<String, SearchResultData>()
-    private val artistAvatarCache = ConcurrentHashMap<String, String>()
+    private val searchFilterCache = BoundedLruMap<String, SearchResultData>(64)
+    private val artistAvatarCache = BoundedLruMap<String, String>(512)
     private val inFlightArtistAvatars = ConcurrentHashMap<String, Deferred<String?>>()
 
     private val artistProfileCache = ConcurrentHashMap<String, TimedCacheEntry<ArtistDetailProfile>>()
     private val albumDetailCache = ConcurrentHashMap<String, TimedCacheEntry<AlbumDetailProfile>>()
-    private val moodCategoryDetailCache = ConcurrentHashMap<String, TimedCacheEntry<YtmMoodCategoryDetail>>()
+    private val moodCategoryDetailCache = BoundedLruMap<String, TimedCacheEntry<YtmMoodCategoryDetail>>(32)
     @Volatile private var moodsAndGenresCache: TimedCacheEntry<YtmMoodsAndGenresFeed>? = null
     private val inFlightArtistProfiles = ConcurrentHashMap<String, Deferred<ArtistDetailProfile?>>()
     private val inFlightAlbumDetails = ConcurrentHashMap<String, Deferred<AlbumDetailProfile?>>()
@@ -220,6 +232,7 @@ class YouTubeMusicService(
 
     companion object {
         private const val TAG = "YouTubeMusicService"
+        private const val MAX_AUDIO_CACHE_BYTES = 400L * 1024L * 1024L // 400 MB LRU cap
         private const val SEARCH_URL = "https://music.youtube.com/youtubei/v1/search?prettyPrint=false"
         private const val BROWSE_URL = "https://music.youtube.com/youtubei/v1/browse?prettyPrint=false"
         private const val NEXT_URL = "https://music.youtube.com/youtubei/v1/next?prettyPrint=false"
@@ -233,7 +246,9 @@ class YouTubeMusicService(
         private val TRACK_CREDITS_BROWSE_ID_REGEX = Regex("""^MPTC([A-Za-z0-9_-]{11})$""")
         private val VIDEO_ID_REGEX = Regex("""^[A-Za-z0-9_-]{11}$""")
         private val YEAR_REGEX = Regex("""^\d{4}$""")
+        private val YEAR_IN_TEXT_REGEX = Regex("""\b(19\d\d|20\d\d)\b""")
         private val DURATION_REGEX = Regex("""^\d{1,2}:\d{2}(:\d{2})?$""")
+        private val DURATION_IN_TEXT_REGEX = Regex("""\b(\d{1,2}:\d{2}(?::\d{2})?)\b""")
         private val VISTAS_COUNT_REGEX = Regex("""\b\d+(?:[.,]\d+)?\s*[KMBkmb]?\s*vistas\b""", RegexOption.IGNORE_CASE)
         private val VIDEO_TITLE_TAG_REGEX = Regex(
             """[\(\[]\s*(?:official\s*(?:music\s*)?video|official\s*lyric\s*video|lyric\s*video|music\s*video|video\s*oficial|audio\s*oficial|official\s*audio|official\s*hd\s*video|4k\s*remaster(?:ed)?|hd|4k|lyrics?|sub\.?\s*espa[nñ]ol)\s*[\)\]]""",
@@ -241,6 +256,20 @@ class YouTubeMusicService(
         )
         private val NON_ALPHANUMERIC_SPACE_REGEX = Regex("""[^\p{L}\p{N}\s]+""")
         private val WHITESPACE_REGEX = Regex("""\s+""")
+        private val CLEN_PARAM_REGEX = Regex("""[?&]clen=(\d+)""")
+        private val TOPIC_SUFFIX_REGEX = Regex("""\s*-\s*Topic$""", RegexOption.IGNORE_CASE)
+        private val VEVO_SUFFIX_REGEX = Regex("""VEVO$""", RegexOption.IGNORE_CASE)
+        private val OFFICIAL_SUFFIX_REGEX = Regex("""\s+Official$""", RegexOption.IGNORE_CASE)
+        private val COMBINING_DIACRITICS_REGEX = Regex("""\p{M}+""")
+        private val PUNCTUATION_ONLY_REGEX = Regex("""^[,&/|•·\-–—+]+$""")
+        private val THUMB_WH_REGEX = Regex("=w\\d+-h\\d+")
+        private val THUMB_S_REGEX = Regex("=s\\d+")
+        private val THUMB_WH_TAIL_REGEX = Regex("=w\\d+-h\\d+.*")
+        private val THUMB_S_TAIL_REGEX = Regex("=s\\d+.*")
+        private val BULLET_YEAR_TAIL_REGEX = Regex("""•\s*(19\d\d|20\d\d).*""")
+        private val WIKIPEDIA_SUFFIX_REGEX = Regex("\\s*From Wikipedia.*", RegexOption.IGNORE_CASE)
+        private val NON_NUMERIC_UNIT_REGEX = Regex("[^0-9.KkMmBb]")
+        private val ISO_YEAR_MONTH_REGEX = Regex("""\b(?:19\d\d|20\d\d)[-/](0?[1-9]|1[0-2])\b""")
 
         fun getAtvCounterpartCacheFile(context: Context): File {
             val appContext = context.applicationContext ?: context
@@ -938,6 +967,7 @@ class YouTubeMusicService(
 
         // 1. Instant Cache: Check if already downloaded to disk (> 50 KB)
         if (targetFile.exists() && targetFile.length() > 50_000) {
+            runCatching { targetFile.setLastModified(clockMs()) }
             safeLog("Using cached audio track: ${targetFile.absolutePath} (${targetFile.length()} bytes)")
             return@withContext targetFile
         }
@@ -976,6 +1006,8 @@ class YouTubeMusicService(
                         targetFile.delete()
                     }
                     tempFile.renameTo(targetFile)
+                    runCatching { targetFile.setLastModified(clockMs()) }
+                    trimAudioCacheIfNeeded(cacheDir, excludeFileName = targetFile.name)
                     safeLog("Cached YouTube Music audio for '$cleanVideoId' at '${targetFile.absolutePath}' (${targetFile.length()} bytes)")
                     return@withContext targetFile
                 }
@@ -999,6 +1031,28 @@ class YouTubeMusicService(
         }
 
         null
+    }
+
+    internal fun trimAudioCacheIfNeeded(
+        cacheDir: File,
+        maxBytes: Long = MAX_AUDIO_CACHE_BYTES,
+        excludeFileName: String? = null
+    ) {
+        runCatching {
+            val files = cacheDir.listFiles()?.filter { it.isFile } ?: return
+            var totalBytes = files.sumOf { it.length() }
+            if (totalBytes <= maxBytes) return
+            val sortedOldestFirst = files
+                .filter { it.name != excludeFileName }
+                .sortedBy { it.lastModified() }
+            for (file in sortedOldestFirst) {
+                if (totalBytes <= maxBytes) break
+                val len = file.length()
+                if (file.delete()) {
+                    totalBytes -= len
+                }
+            }
+        }
     }
 
     private fun buildStreamDownloadRequest(url: String, resolved: ResolvedAudioStream): Request {
@@ -1374,9 +1428,9 @@ class YouTubeMusicService(
     internal fun cleanAuthorForAtvSearch(raw: String): String {
         if (raw.isBlank()) return ""
         return raw
-            .replace(Regex("""\s*-\s*Topic$""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""VEVO$""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""\s+Official$""", RegexOption.IGNORE_CASE), "")
+            .replace(TOPIC_SUFFIX_REGEX, "")
+            .replace(VEVO_SUFFIX_REGEX, "")
+            .replace(OFFICIAL_SUFFIX_REGEX, "")
             .replace(WHITESPACE_REGEX, " ")
             .trim()
     }
@@ -1384,7 +1438,7 @@ class YouTubeMusicService(
     internal fun normalizeMatchText(raw: String): String {
         if (raw.isBlank()) return ""
         val decomposed = java.text.Normalizer.normalize(raw, java.text.Normalizer.Form.NFD)
-        val withoutAccents = decomposed.replace(Regex("""\p{M}+"""), "")
+        val withoutAccents = decomposed.replace(COMBINING_DIACRITICS_REGEX, "")
         return withoutAccents
             .lowercase(java.util.Locale.ROOT)
             .replace(NON_ALPHANUMERIC_SPACE_REGEX, " ")
@@ -1542,9 +1596,9 @@ class YouTubeMusicService(
         if (VIDEO_ID_REGEX.matches(rawId)) {
             ensureAtvCounterpartCacheLoaded()
             // Reverse lookup in atvCounterpartCache: omv -> atv
-            atvCounterpartCache.entries.firstOrNull { (k, v) ->
+            atvCounterpartCache.entriesSnapshot().firstOrNull { (k, v) ->
                 k != v && v == rawId && VIDEO_ID_REGEX.matches(k)
-            }?.key?.let { candidateVideoIds.add(it) }
+            }?.first?.let { candidateVideoIds.add(it) }
 
             // Native YouTube Music /next counterpart lookup (OMV paired directly with ATV track)
             findNativeVideoCounterpartId(rawId)?.let { candidateVideoIds.add(it) }
@@ -2785,8 +2839,8 @@ class YouTubeMusicService(
         val trimmed = rawUrl?.trim()?.takeIf { it.isNotBlank() } ?: return null
         val withScheme = if (trimmed.startsWith("//")) "https:$trimmed" else trimmed
         return withScheme
-            .replace(Regex("=w\\d+-h\\d+"), "=w$targetSizePx-h$targetSizePx")
-            .replace(Regex("=s\\d+"), "=s$targetSizePx")
+            .replace(THUMB_WH_REGEX, "=w$targetSizePx-h$targetSizePx")
+            .replace(THUMB_S_REGEX, "=s$targetSizePx")
     }
 
     private fun extractThumbUrlListFromRenderer(renderer: JSONObject): JSONArray? {
@@ -2929,7 +2983,7 @@ class YouTubeMusicService(
                 if (t.equals("Album", ignoreCase = true) || t.equals("Álbum", ignoreCase = true) ||
                     t.equals("Single", ignoreCase = true) || t.equals("EP", ignoreCase = true)) {
                     type = t
-                } else if (Regex("""\b(19\d\d|20\d\d)\b""").matches(t)) {
+                } else if (YEAR_IN_TEXT_REGEX.matches(t)) {
                     year = t.toIntOrNull() ?: 2024
                 } else if (artist == "Unknown Artist") {
                     artist = t
@@ -3496,7 +3550,7 @@ class YouTubeMusicService(
 
                 val subObj = headerRenderer.optJSONObject("subtitle")
                 val sub = extractAllRunsText(subObj)
-                val y = Regex("""\b(19\d\d|20\d\d)\b""").find(sub)?.value?.toIntOrNull()
+                val y = YEAR_IN_TEXT_REGEX.find(sub)?.value?.toIntOrNull()
                 if (y != null) resolvedYear = y
 
                 val secSubObj = headerRenderer.optJSONObject("secondSubtitle")
@@ -3760,14 +3814,14 @@ class YouTubeMusicService(
                                 if (thumbObj != null && thumbObj.length() > 0) {
                                     cover = thumbObj.getJSONObject(thumbObj.length() - 1).optString("url")
                                     if (cover.isNotBlank()) {
-                                        cover = cover.replace(Regex("=w\\d+-h\\d+.*"), "=w540-h540-p-l90-rj")
-                                            .replace(Regex("=s\\d+.*"), "=s540-c-k-c0x00ffffff-no-rj-mo")
+                                        cover = cover.replace(THUMB_WH_TAIL_REGEX, "=w540-h540-p-l90-rj")
+                                            .replace(THUMB_S_TAIL_REGEX, "=s540-c-k-c0x00ffffff-no-rj-mo")
                                     }
                                 }
 
-                                val year = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value?.toIntOrNull() ?: 2024
-                                val albArtist = if (subtitle.isNotBlank() && !subtitle.matches(Regex("""\b(19\d\d|20\d\d)\b"""))) {
-                                    subtitle.replace(Regex("""•\s*(19\d\d|20\d\d).*"""), "").trim().ifBlank { artistName }
+                                val year = YEAR_IN_TEXT_REGEX.find(subtitle)?.value?.toIntOrNull() ?: 2024
+                                val albArtist = if (subtitle.isNotBlank() && !subtitle.matches(YEAR_IN_TEXT_REGEX)) {
+                                    subtitle.replace(BULLET_YEAR_TAIL_REGEX, "").trim().ifBlank { artistName }
                                 } else {
                                     artistName
                                 }
@@ -4118,7 +4172,7 @@ class YouTubeMusicService(
                     }
                 }
                 if (bestUrl.isNotBlank()) {
-                    return bestUrl.replace(Regex("=w\\d+-h\\d+.*"), "=w1920-h800-p-l90-rj")
+                    return bestUrl.replace(THUMB_WH_TAIL_REGEX, "=w1920-h800-p-l90-rj")
                 }
             }
         } catch (_: Exception) {}
@@ -4307,7 +4361,7 @@ class YouTubeMusicService(
                 if (thumbObj != null && thumbObj.length() > 0) {
                     videoThumb = thumbObj.getJSONObject(thumbObj.length() - 1).optString("url")
                     if (videoThumb.isNotBlank()) {
-                        videoThumb = videoThumb.replace(Regex("=w\\d+-h\\d+.*"), "=w640-h360-p-l90-rj")
+                        videoThumb = videoThumb.replace(THUMB_WH_TAIL_REGEX, "=w640-h360-p-l90-rj")
                     }
                 }
                 if (videoThumb.isBlank()) {
@@ -4351,8 +4405,8 @@ class YouTubeMusicService(
             if (thumbObj != null && thumbObj.length() > 0) {
                 coverUrl = thumbObj.getJSONObject(thumbObj.length() - 1).optString("url")
                 if (coverUrl.isNotBlank()) {
-                    coverUrl = coverUrl.replace(Regex("=w\\d+-h\\d+.*"), "=w540-h540-p-l90-rj")
-                        .replace(Regex("=s\\d+.*"), "=s540-c-k-c0x00ffffff-no-rj-mo")
+                    coverUrl = coverUrl.replace(THUMB_WH_TAIL_REGEX, "=w540-h540-p-l90-rj")
+                        .replace(THUMB_S_TAIL_REGEX, "=s540-c-k-c0x00ffffff-no-rj-mo")
                 }
             }
 
@@ -4418,8 +4472,8 @@ class YouTubeMusicService(
                             AlbumItem(
                                 id = "ytm_alb_$browseId",
                                 title = title,
-                                artist = if (subtitle.isNotBlank() && !subtitle.matches(Regex("""\b(19\d\d|20\d\d)\b"""))) {
-                                    subtitle.replace(Regex("""•\s*(19\d\d|20\d\d).*"""), "").trim().ifBlank { artistName }
+                                artist = if (subtitle.isNotBlank() && !subtitle.matches(YEAR_IN_TEXT_REGEX)) {
+                                    subtitle.replace(BULLET_YEAR_TAIL_REGEX, "").trim().ifBlank { artistName }
                                 } else {
                                     artistName
                                 },
@@ -4438,7 +4492,7 @@ class YouTubeMusicService(
     }
 
     internal fun parseReleaseYearAndMonth(subtitle: String, fallbackYear: Int = 2024): Triple<Int, Int, String> {
-        val year = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value?.toIntOrNull() ?: fallbackYear
+        val year = YEAR_IN_TEXT_REGEX.find(subtitle)?.value?.toIntOrNull() ?: fallbackYear
         val lower = subtitle.lowercase(Locale.ROOT)
         val monthTokens = listOf(
             1 to listOf("jan", "ene", "enero", "january"),
@@ -5326,7 +5380,7 @@ class YouTubeMusicService(
             twoRow.optJSONObject("thumbnailRenderer")?.optJSONObject("musicThumbnailRenderer")?.optJSONObject("thumbnail")
         )
         val artist = extractArtistFromSubtitle(subtitle).ifBlank { "YouTube Artist" }
-        val yearStr = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value
+        val yearStr = YEAR_IN_TEXT_REGEX.find(subtitle)?.value
 
         val id = when {
             browseId.isNotBlank() -> "nr_alb_$browseId"
@@ -5435,7 +5489,7 @@ class YouTubeMusicService(
 
         if (isAlbum) {
             val artist = extractArtistFromSubtitle(subtitle).ifBlank { "YouTube Artist" }
-            val year = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value?.toIntOrNull() ?: 2024
+            val year = YEAR_IN_TEXT_REGEX.find(subtitle)?.value?.toIntOrNull() ?: 2024
             val albumKey = "${title.lowercase(Locale.ROOT)}::${artist.lowercase(Locale.ROOT)}"
             if (seenAlbumKeys.add(albumKey)) {
                 albums.add(
@@ -5459,7 +5513,7 @@ class YouTubeMusicService(
                         artworkUri = thumb,
                         isAlbum = true,
                         browseId = browseId.ifBlank { null },
-                        year = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value
+                        year = YEAR_IN_TEXT_REGEX.find(subtitle)?.value
                     )
                 )
             }
@@ -5527,7 +5581,7 @@ class YouTubeMusicService(
                             artworkUri = thumb,
                             isAlbum = false,
                             videoId = videoId,
-                            year = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value
+                            year = YEAR_IN_TEXT_REGEX.find(subtitle)?.value
                         )
                     )
                 }
@@ -5990,6 +6044,17 @@ class YouTubeMusicService(
         val twoColSecondary = json.optJSONObject("contents")
             ?.optJSONObject("twoColumnBrowseResultsRenderer")
             ?.optJSONObject("secondaryContents")
+        val playlistShelf = findFirstObjectForKey(twoColSecondary ?: json, "musicPlaylistShelfRenderer")
+        if (playlistShelf != null) {
+            extractTracksRecursive(
+                jsonObj = playlistShelf,
+                results = tracks,
+                seenIds = seenIds,
+                isPlaylistContext = true,
+                playlistFallbackCover = headerCover
+            )
+            return tracks
+        }
         if (twoColSecondary != null) {
             extractTracksRecursive(
                 jsonObj = twoColSecondary,
@@ -6009,6 +6074,429 @@ class YouTubeMusicService(
             )
         }
         return tracks
+    }
+
+    private fun findFirstObjectForKey(node: Any?, targetKey: String): JSONObject? {
+        when (node) {
+            is JSONObject -> {
+                node.optJSONObject(targetKey)?.let { return it }
+                val keys = node.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val found = findFirstObjectForKey(node.opt(key), targetKey)
+                    if (found != null) return found
+                }
+            }
+            is JSONArray -> {
+                for (i in 0 until node.length()) {
+                    val found = findFirstObjectForKey(node.opt(i), targetKey)
+                    if (found != null) return found
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Executes an authenticated InnerTube `/browse` request against the user's YouTube Music library.
+     * Requires an active signed-in session; if HTTP 400/403 occurs while delegated `onBehalfOfUser` /
+     * `X-Goog-PageId` was included, retries once without delegation (`includeUser = false, includePageId = false`).
+     * Never falls back to anonymous unauthenticated requests.
+     */
+    internal fun executeAuthenticatedLibraryBrowse(payload: JSONObject): JSONObject? {
+        val manager = authManager
+        if (manager == null || !manager.isSignedIn()) return null
+
+        val primary = executeInnerTubePostWithStatus(
+            url = browseUrl,
+            payload = payload,
+            includeAuthHeaders = true,
+            includePageId = true
+        )
+        if (primary.json != null) return primary.json
+
+        val hasDelegation = !manager.getOnBehalfOfUser().isNullOrBlank() ||
+            payload.optJSONObject("context")?.has("user") == true
+        if ((primary.httpCode == 400 || primary.httpCode == 403) && hasDelegation) {
+            val retryPayload = JSONObject(payload.toString()).apply {
+                put("context", buildWebRemixContextJson(includeUser = false))
+            }
+            val retry = executeInnerTubePostWithStatus(
+                url = browseUrl,
+                payload = retryPayload,
+                includeAuthHeaders = true,
+                includePageId = false
+            )
+            return retry.json
+        }
+        return null
+    }
+
+    /**
+     * Fetches the signed-in user's YouTube Music library playlists via `FEmusic_liked_playlists`,
+     * following continuations up to 8 pages with cycle detection.
+     */
+    suspend fun fetchUserLibraryPlaylists(): List<YouTubeMusicLibraryPlaylist> = withContext(Dispatchers.IO) {
+        if (authManager?.isSignedIn() != true) return@withContext emptyList()
+
+        val initialPayload = JSONObject().apply {
+            put("context", buildWebRemixContextJson(includeUser = true))
+            put("browseId", "FEmusic_liked_playlists")
+        }
+        var currentJson = executeAuthenticatedLibraryBrowse(initialPayload)
+            ?: return@withContext emptyList()
+
+        val allPlaylists = mutableListOf<YouTubeMusicLibraryPlaylist>()
+        val seenIds = mutableSetOf<String>()
+        val visitedTokens = mutableSetOf<String>()
+        var pageCount = 0
+
+        while (pageCount < 8) {
+            pageCount++
+            val (pageItems, nextToken) = parseUserLibraryPlaylistsResponse(currentJson)
+            for (item in pageItems) {
+                if (seenIds.add(item.playlistId.lowercase(Locale.ROOT))) {
+                    allPlaylists.add(item)
+                }
+            }
+            if (nextToken.isNullOrBlank() || !visitedTokens.add(nextToken)) {
+                break
+            }
+            val contPayload = JSONObject().apply {
+                put("context", buildWebRemixContextJson(includeUser = true))
+                put("continuation", nextToken)
+            }
+            currentJson = executeAuthenticatedLibraryBrowse(contPayload) ?: break
+        }
+        allPlaylists
+    }
+
+    /**
+     * Fetches all tracks for a user's YouTube Music playlist via authenticated `/browse`,
+     * following continuations up to 20 pages with cycle detection.
+     * Preserves OMV/video tracks and promotes ATV `MPTC` when available.
+     * Does NOT fall back to `searchCatalog` if the playlist is empty.
+     */
+    suspend fun fetchUserPlaylistTracks(playlist: YouTubeMusicLibraryPlaylist): List<TrackItem> = withContext(Dispatchers.IO) {
+        if (authManager?.isSignedIn() != true) return@withContext emptyList()
+
+        val rawBrowse = playlist.browseId.trim()
+        val cleanId = playlist.playlistId.trim().removePrefix("VL")
+        val normalizedBrowseId = when {
+            rawBrowse.startsWith("VL") -> rawBrowse
+            rawBrowse.isNotBlank() -> "VL$rawBrowse"
+            cleanId.isNotBlank() -> "VL$cleanId"
+            else -> return@withContext emptyList()
+        }
+
+        val initialPayload = JSONObject().apply {
+            put("context", buildWebRemixContextJson(includeUser = true))
+            put("browseId", normalizedBrowseId)
+        }
+        var currentJson = executeAuthenticatedLibraryBrowse(initialPayload)
+            ?: return@withContext emptyList()
+
+        val allTracks = mutableListOf<TrackItem>()
+        val seenTrackIds = mutableSetOf<String>()
+        val visitedTokens = mutableSetOf<String>()
+        var pageCount = 0
+
+        while (pageCount < 20) {
+            pageCount++
+            val pageTracks = parsePlaylistBrowseTracks(currentJson)
+            for (track in pageTracks) {
+                if (seenTrackIds.add(track.id)) {
+                    allTracks.add(track)
+                }
+            }
+            val nextToken = extractLibraryOrPlaylistContinuationToken(currentJson)
+            if (nextToken.isNullOrBlank() || !visitedTokens.add(nextToken)) {
+                break
+            }
+            val contPayload = JSONObject().apply {
+                put("context", buildWebRemixContextJson(includeUser = true))
+                put("continuation", nextToken)
+            }
+            currentJson = executeAuthenticatedLibraryBrowse(contPayload) ?: break
+        }
+        allTracks
+    }
+
+    /**
+     * Parses a YouTube Music `FEmusic_liked_playlists` (or continuation) JSON response into
+     * a deduplicated list of [YouTubeMusicLibraryPlaylist] entries plus an optional continuation token.
+     */
+    internal fun parseUserLibraryPlaylistsResponse(
+        json: JSONObject
+    ): Pair<List<YouTubeMusicLibraryPlaylist>, String?> {
+        val results = mutableListOf<YouTubeMusicLibraryPlaylist>()
+        val seenIds = mutableSetOf<String>()
+        collectUserLibraryPlaylistsRecursive(json, results, seenIds)
+        val nextToken = extractLibraryOrPlaylistContinuationToken(json)
+        return results to nextToken
+    }
+
+    private fun collectUserLibraryPlaylistsRecursive(
+        node: Any?,
+        results: MutableList<YouTubeMusicLibraryPlaylist>,
+        seenIds: MutableSet<String>
+    ) {
+        when (node) {
+            is JSONObject -> {
+                if (node.has("musicTwoRowItemRenderer")) {
+                    node.optJSONObject("musicTwoRowItemRenderer")?.let { renderer ->
+                        parseTwoRowLibraryPlaylist(renderer)?.let { item ->
+                            if (seenIds.add(item.playlistId.lowercase(Locale.ROOT))) {
+                                results.add(item)
+                            }
+                        }
+                    }
+                    return
+                }
+                if (node.has("musicResponsiveListItemRenderer")) {
+                    node.optJSONObject("musicResponsiveListItemRenderer")?.let { renderer ->
+                        parseResponsiveLibraryPlaylist(renderer)?.let { item ->
+                            if (seenIds.add(item.playlistId.lowercase(Locale.ROOT))) {
+                                results.add(item)
+                            }
+                        }
+                    }
+                    return
+                }
+                val keys = node.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    if (key == "chipCloudRenderer" || key == "header") continue
+                    collectUserLibraryPlaylistsRecursive(node.opt(key), results, seenIds)
+                }
+            }
+            is JSONArray -> {
+                for (i in 0 until node.length()) {
+                    collectUserLibraryPlaylistsRecursive(node.opt(i), results, seenIds)
+                }
+            }
+        }
+    }
+
+    private fun isCreatePlaylistActionEndpoint(endpoint: JSONObject?): Boolean {
+        if (endpoint == null) return false
+        return endpoint.has("createPlaylistServiceEndpoint") ||
+            endpoint.has("playlistEditorEndpoint") ||
+            endpoint.has("playlistEditEndpoint") ||
+            endpoint.has("modalWithTitleAndButtonRenderer")
+    }
+
+    private fun resolveLibraryPlaylistIds(
+        primaryNav: JSONObject?,
+        titleNav: JSONObject?,
+        overlayPlayNav: JSONObject?
+    ): Pair<String, String>? {
+        if (isCreatePlaylistActionEndpoint(primaryNav) || isCreatePlaylistActionEndpoint(titleNav)) {
+            return null
+        }
+
+        val browseEndpoint = primaryNav?.optJSONObject("browseEndpoint")
+            ?: titleNav?.optJSONObject("browseEndpoint")
+        val rawBrowseId = browseEndpoint?.optString("browseId").orEmpty().trim()
+        val pageType = extractBrowsePageType(primaryNav).ifBlank { extractBrowsePageType(titleNav) }
+
+        if (isPodcastOrEpisodesPlaylist(rawBrowseId, pageType)) {
+            return null
+        }
+
+        val watchPlaylistId = primaryNav?.optJSONObject("watchPlaylistEndpoint")?.optString("playlistId").orEmpty().trim()
+            .ifBlank { titleNav?.optJSONObject("watchPlaylistEndpoint")?.optString("playlistId").orEmpty().trim() }
+            .ifBlank { overlayPlayNav?.optJSONObject("watchPlaylistEndpoint")?.optString("playlistId").orEmpty().trim() }
+
+        if (rawBrowseId.isNotBlank()) {
+            val isAcceptedBrowse = rawBrowseId.equals("VLLM", ignoreCase = true) ||
+                rawBrowseId.startsWith("VL") ||
+                pageType.equals("MUSIC_PAGE_TYPE_PLAYLIST", ignoreCase = true)
+            if (!isAcceptedBrowse) return null
+            val normalizedId = if (rawBrowseId.startsWith("VL") && rawBrowseId.length > 2) {
+                rawBrowseId.removePrefix("VL")
+            } else {
+                rawBrowseId
+            }
+            if (normalizedId.isBlank() || normalizedId.equals("SE", ignoreCase = true)) return null
+            val normalizedBrowse = if (rawBrowseId.startsWith("VL")) rawBrowseId else "VL$normalizedId"
+            return normalizedId to normalizedBrowse
+        }
+
+        if (watchPlaylistId.isNotBlank()) {
+            val normalizedId = if (watchPlaylistId.startsWith("VL") && watchPlaylistId.length > 2) {
+                watchPlaylistId.removePrefix("VL")
+            } else {
+                watchPlaylistId
+            }
+            if (normalizedId.isBlank() || normalizedId.equals("SE", ignoreCase = true)) return null
+            return normalizedId to "VL$normalizedId"
+        }
+
+        return null
+    }
+
+    private fun isPodcastOrEpisodesPlaylist(browseId: String, pageType: String): Boolean {
+        return browseId.equals("VLSE", ignoreCase = true) ||
+            browseId.equals("SE", ignoreCase = true) ||
+            pageType.equals("MUSIC_PAGE_TYPE_PODCAST_SHOW_DETAIL_PAGE", ignoreCase = true) ||
+            pageType.equals("MUSIC_PAGE_TYPE_PODCAST_SHOW", ignoreCase = true) ||
+            pageType.equals("MUSIC_PAGE_TYPE_PODCAST_EPISODE_DETAIL_PAGE", ignoreCase = true)
+    }
+
+    private fun parseTwoRowLibraryPlaylist(twoRow: JSONObject): YouTubeMusicLibraryPlaylist? {
+        val titleObj = twoRow.optJSONObject("title")
+        val title = extractAllRunsText(titleObj).trim()
+        if (title.isBlank()) return null
+
+        val navEp = twoRow.optJSONObject("navigationEndpoint")
+        val titleRunNav = titleObj?.optJSONArray("runs")?.optJSONObject(0)?.optJSONObject("navigationEndpoint")
+        val overlayPlayNav = twoRow.optJSONObject("thumbnailOverlay")
+            ?.optJSONObject("musicItemThumbnailOverlayRenderer")
+            ?.optJSONObject("content")
+            ?.optJSONObject("musicPlayButtonRenderer")
+            ?.optJSONObject("playNavigationEndpoint")
+
+        val (playlistId, browseId) = resolveLibraryPlaylistIds(navEp, titleRunNav, overlayPlayNav)
+            ?: return null
+
+        val subtitle = extractAllRunsText(twoRow.optJSONObject("subtitle")).trim()
+        val artworkUri = extractThumbUrlFromObject(
+            twoRow.optJSONObject("thumbnailRenderer")
+                ?.optJSONObject("musicThumbnailRenderer")
+                ?.optJSONObject("thumbnail")
+        ) ?: extractHighResAvatarFromRenderer(twoRow).orEmpty()
+
+        return YouTubeMusicLibraryPlaylist(
+            playlistId = playlistId,
+            browseId = browseId,
+            title = title,
+            subtitle = subtitle,
+            artworkUri = artworkUri,
+            author = extractPlaylistAuthor(subtitle).orEmpty(),
+            trackCountText = extractTrackCount(subtitle).orEmpty()
+        )
+    }
+
+    private fun parseResponsiveLibraryPlaylist(renderer: JSONObject): YouTubeMusicLibraryPlaylist? {
+        val flexColumns = renderer.optJSONArray("flexColumns") ?: return null
+        val col0Text = flexColumns.optJSONObject(0)
+            ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+            ?.optJSONObject("text")
+        val col1Text = flexColumns.optJSONObject(1)
+            ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+            ?.optJSONObject("text")
+
+        val title = extractAllRunsText(col0Text).trim()
+        if (title.isBlank()) return null
+
+        val navEp = renderer.optJSONObject("navigationEndpoint")
+        val titleRunNav = col0Text?.optJSONArray("runs")?.optJSONObject(0)?.optJSONObject("navigationEndpoint")
+        val overlayPlayNav = renderer.optJSONObject("overlay")
+            ?.optJSONObject("musicItemThumbnailOverlayRenderer")
+            ?.optJSONObject("content")
+            ?.optJSONObject("musicPlayButtonRenderer")
+            ?.optJSONObject("playNavigationEndpoint")
+
+        val (playlistId, browseId) = resolveLibraryPlaylistIds(navEp, titleRunNav, overlayPlayNav)
+            ?: return null
+
+        val subtitle = extractAllRunsText(col1Text).trim()
+        val artworkUri = extractThumbUrlFromObject(
+            renderer.optJSONObject("thumbnail")
+                ?.optJSONObject("musicThumbnailRenderer")
+                ?.optJSONObject("thumbnail")
+        ) ?: extractHighResAvatarFromRenderer(renderer).orEmpty()
+
+        return YouTubeMusicLibraryPlaylist(
+            playlistId = playlistId,
+            browseId = browseId,
+            title = title,
+            subtitle = subtitle,
+            artworkUri = artworkUri,
+            author = extractPlaylistAuthor(subtitle).orEmpty(),
+            trackCountText = extractTrackCount(subtitle).orEmpty()
+        )
+    }
+
+    /**
+     * Extracts the next pagination continuation token across YouTube Music library and playlist
+     * response shapes (`musicPlaylistShelfRenderer`, `musicShelfContinuation`, `gridRenderer`,
+     * `gridContinuation`, `sectionListRenderer`, `sectionListContinuation`, and
+     * `continuationItemRenderer.continuationEndpoint.continuationCommand.token`).
+     * Ignores `reloadContinuationData` (used by filter chips).
+     */
+    internal fun extractLibraryOrPlaylistContinuationToken(json: JSONObject): String? {
+        fun fromContinuationsArray(arr: JSONArray?): String? {
+            if (arr == null) return null
+            for (i in 0 until arr.length()) {
+                val entry = arr.optJSONObject(i) ?: continue
+                val token = entry.optJSONObject("nextContinuationData")
+                    ?.optString("continuation")
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: entry.optJSONObject("nextRadioContinuationData")
+                        ?.optString("continuation")
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                if (token != null) return token
+            }
+            return null
+        }
+
+        fun fromContinuationItem(obj: JSONObject?): String? {
+            return obj?.optJSONObject("continuationEndpoint")
+                ?.optJSONObject("continuationCommand")
+                ?.optString("token")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+        }
+
+        fun searchRecursive(node: Any?): String? {
+            when (node) {
+                is JSONObject -> {
+                    node.optJSONObject("continuationItemRenderer")?.let { item ->
+                        fromContinuationItem(item)?.let { return it }
+                    }
+                    fromContinuationsArray(node.optJSONArray("continuations"))?.let { return it }
+
+                    val priorityKeys = listOf(
+                        "musicPlaylistShelfRenderer",
+                        "musicShelfContinuation",
+                        "gridContinuation",
+                        "musicShelfRenderer",
+                        "gridRenderer",
+                        "sectionListContinuation",
+                        "sectionListRenderer",
+                        "onResponseReceivedActions",
+                        "appendContinuationItemsAction",
+                        "continuationItems",
+                        "continuationContents",
+                        "contents",
+                        "twoColumnBrowseResultsRenderer",
+                        "secondaryContents",
+                        "singleColumnBrowseResultsRenderer",
+                        "tabs",
+                        "tabRenderer",
+                        "content",
+                        "items"
+                    )
+                    for (key in priorityKeys) {
+                        if (node.has(key)) {
+                            searchRecursive(node.opt(key))?.let { return it }
+                        }
+                    }
+                }
+                is JSONArray -> {
+                    for (i in 0 until node.length()) {
+                        searchRecursive(node.opt(i))?.let { return it }
+                    }
+                }
+            }
+            return null
+        }
+
+        return searchRecursive(json)
     }
 
     private fun extractBrowseSections(json: JSONObject): List<JSONObject> {
@@ -6542,9 +7030,12 @@ class YouTubeMusicService(
         val parts = subtitle.split("•").map { it.trim() }.filter { it.isNotBlank() }
         return parts.firstOrNull { part ->
             !part.equals("Playlist", ignoreCase = true) &&
+                !part.equals("Auto playlist", ignoreCase = true) &&
+                !part.equals("Lista de reproducción", ignoreCase = true) &&
                 !part.contains("song", ignoreCase = true) &&
                 !part.contains("track", ignoreCase = true) &&
-                !part.contains("cancion", ignoreCase = true)
+                !part.contains("cancion", ignoreCase = true) &&
+                !part.contains("canción", ignoreCase = true)
         }
     }
 
@@ -6553,7 +7044,8 @@ class YouTubeMusicService(
         return subtitle.split("•").map { it.trim() }.firstOrNull { part ->
             part.contains("song", ignoreCase = true) ||
                 part.contains("track", ignoreCase = true) ||
-                part.contains("cancion", ignoreCase = true)
+                part.contains("cancion", ignoreCase = true) ||
+                part.contains("canción", ignoreCase = true)
         }
     }
 }

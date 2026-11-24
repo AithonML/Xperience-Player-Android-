@@ -116,13 +116,9 @@ class MainActivity : ComponentActivity() {
       val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
       ) { isGranted ->
-        if (isGranted) {
+        if (isGranted && homeViewModel.playbackState.value.isPlaying) {
           homeViewModel.audioPlayerService.ensureServiceStarted()
         }
-      }
-
-      LaunchedEffect(Unit) {
-        homeViewModel.audioPlayerService.ensureServiceStarted()
       }
 
       LaunchedEffect(pendingWidgetDeepLink, mountHomeScreen) {

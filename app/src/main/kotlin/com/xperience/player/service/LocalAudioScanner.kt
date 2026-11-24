@@ -80,6 +80,7 @@ class LocalAudioScanner(private val context: Context) {
                 val dateAddedCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_ADDED)
                 val dateModifiedCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_MODIFIED)
 
+                val dirEntriesCache = HashMap<String, Set<String>>()
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idCol)
                     val rawTitle = cursor.getString(titleCol) ?: "Unknown Song"
@@ -118,7 +119,7 @@ class LocalAudioScanner(private val context: Context) {
                         effectiveArtist = "Unknown Artist"
                     }
 
-                    // 2. Discover companion album cover (.jpg sidecar next to audio file)
+                    // 2. Discover companion album cover (.jpg sidecar next to audio file) using cached dir listing
                     var resolvedArtworkUri: String? = null
                     var fileLastModifiedMs = 0L
                     if (!filePath.isNullOrBlank()) {
@@ -128,20 +129,29 @@ class LocalAudioScanner(private val context: Context) {
                                 fileLastModifiedMs = audioFile.lastModified()
                             }
                             val parentDir = audioFile.parentFile
-                            if (parentDir != null && parentDir.exists()) {
-                                val baseName = audioFile.nameWithoutExtension
-                                val candidateImages = listOf(
-                                    File(parentDir, "$baseName.jpg"),
-                                    File(parentDir, "$baseName.png"),
-                                    File(parentDir, "$effectiveTitle - $effectiveArtist.jpg"),
-                                    File(parentDir, "$effectiveTitle.jpg"),
-                                    File(parentDir, "cover.jpg"),
-                                    File(parentDir, "cover.png"),
-                                    File(parentDir, "folder.jpg")
-                                )
-                                val foundImg = candidateImages.firstOrNull { it.exists() && it.length() > 1024 }
-                                if (foundImg != null) {
-                                    resolvedArtworkUri = foundImg.toURI().toString()
+                            if (parentDir != null) {
+                                val dirKey = parentDir.absolutePath
+                                val dirEntries = dirEntriesCache.getOrPut(dirKey) {
+                                    parentDir.list()?.toHashSet() ?: emptySet()
+                                }
+                                if (dirEntries.isNotEmpty()) {
+                                    val baseName = audioFile.nameWithoutExtension
+                                    val candidateNames = listOf(
+                                        "$baseName.jpg",
+                                        "$baseName.png",
+                                        "$effectiveTitle - $effectiveArtist.jpg",
+                                        "$effectiveTitle.jpg",
+                                        "cover.jpg",
+                                        "cover.png",
+                                        "folder.jpg"
+                                    )
+                                    val foundImg = candidateNames
+                                        .firstOrNull { it in dirEntries }
+                                        ?.let { File(parentDir, it) }
+                                        ?.takeIf { it.length() > 1024 }
+                                    if (foundImg != null) {
+                                        resolvedArtworkUri = foundImg.toURI().toString()
+                                    }
                                 }
                             }
                         } catch (_: Exception) {}

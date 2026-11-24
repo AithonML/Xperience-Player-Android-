@@ -48,6 +48,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -55,6 +56,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,10 +87,73 @@ import com.xperience.player.ui.theme.AppThemeColors
 import com.xperience.player.ui.theme.GoogleSans
 import com.xperience.player.ui.theme.PlusJakartaSans
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlin.math.abs
 
 private const val USER_SCROLL_PAUSE_MS = 3800L
+
+/**
+ * Overload collecting [playbackPositionMsFlow] without causing composition reads in the parent.
+ */
+@Composable
+fun SynchronizedLyricsView(
+    lines: List<LyricLine>,
+    playbackPositionMsFlow: StateFlow<Long>,
+    providerName: String?,
+    accentColor: Color,
+    appColors: AppThemeColors,
+    onSeekToPosition: (Long) -> Unit,
+    onOpenLyricsSettings: () -> Unit,
+    onImportLrcClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    isPlaying: Boolean = true
+) {
+    val positionState = playbackPositionMsFlow.collectAsState()
+    SynchronizedLyricsView(
+        lines = lines,
+        positionMsProvider = { positionState.value },
+        providerName = providerName,
+        accentColor = accentColor,
+        appColors = appColors,
+        onSeekToPosition = onSeekToPosition,
+        onOpenLyricsSettings = onOpenLyricsSettings,
+        onImportLrcClick = onImportLrcClick,
+        modifier = modifier,
+        isPlaying = isPlaying
+    )
+}
+
+/**
+ * Backwards-compatible overload accepting a plain [currentPositionMs] value.
+ */
+@Composable
+fun SynchronizedLyricsView(
+    lines: List<LyricLine>,
+    currentPositionMs: Long,
+    providerName: String?,
+    accentColor: Color,
+    appColors: AppThemeColors,
+    onSeekToPosition: (Long) -> Unit,
+    onOpenLyricsSettings: () -> Unit,
+    onImportLrcClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    isPlaying: Boolean = true
+) {
+    val latestPosition by rememberUpdatedState(currentPositionMs)
+    SynchronizedLyricsView(
+        lines = lines,
+        positionMsProvider = { latestPosition },
+        providerName = providerName,
+        accentColor = accentColor,
+        appColors = appColors,
+        onSeekToPosition = onSeekToPosition,
+        onOpenLyricsSettings = onOpenLyricsSettings,
+        onImportLrcClick = onImportLrcClick,
+        modifier = modifier,
+        isPlaying = isPlaying
+    )
+}
 
 /**
  * High-performance Apple Music / Convx inspired synchronized lyrics renderer.
@@ -105,7 +170,7 @@ private const val USER_SCROLL_PAUSE_MS = 3800L
 @Composable
 fun SynchronizedLyricsView(
     lines: List<LyricLine>,
-    currentPositionMs: Long,
+    positionMsProvider: () -> Long,
     providerName: String?,
     accentColor: Color,
     appColors: AppThemeColors,
@@ -130,31 +195,34 @@ fun SynchronizedLyricsView(
     val tokenizedLines = remember(lines) { LyricsTimingEngine.tokenizeLines(lines) }
     val listState = rememberLazyListState()
 
-    val latestPositionMs by rememberUpdatedState(currentPositionMs)
+    val latestPositionProvider by rememberUpdatedState(positionMsProvider)
     val latestIsPlaying by rememberUpdatedState(isPlaying)
 
     val interpolator = remember { PlaybackPositionInterpolator() }
-    val smoothPositionState = remember { mutableLongStateOf(currentPositionMs.coerceAtLeast(0L)) }
+    val smoothPositionState = remember { mutableLongStateOf(positionMsProvider().coerceAtLeast(0L)) }
 
     var hasAlignedInitially by remember(lines) { mutableStateOf(false) }
 
     // Reset timeline state cleanly when switching tracks or lyric sources
     LaunchedEffect(lines) {
-        interpolator.snap(latestPositionMs)
-        smoothPositionState.longValue = latestPositionMs.coerceAtLeast(0L)
+        val pos = latestPositionProvider()
+        interpolator.snap(pos)
+        smoothPositionState.longValue = pos.coerceAtLeast(0L)
         if (!isSynchronized) {
             listState.scrollToItem(0)
         }
     }
 
-    // Immediate sync when paused or when user scrubs / seeks far
-    LaunchedEffect(currentPositionMs, isPlaying) {
-        if (!isPlaying) {
-            interpolator.snap(currentPositionMs)
-            smoothPositionState.longValue = currentPositionMs.coerceAtLeast(0L)
-        } else if (abs(currentPositionMs - smoothPositionState.longValue) > LyricsTimingEngine.SEEK_SNAP_THRESHOLD_MS) {
-            interpolator.snap(currentPositionMs)
-            smoothPositionState.longValue = currentPositionMs.coerceAtLeast(0L)
+    // Immediate sync when paused or when user scrubs / seeks far without relaunching LaunchedEffect 30x/sec
+    LaunchedEffect(isPlaying) {
+        snapshotFlow { latestPositionProvider() }.collect { reportedPos ->
+            if (!latestIsPlaying) {
+                interpolator.snap(reportedPos)
+                smoothPositionState.longValue = reportedPos.coerceAtLeast(0L)
+            } else if (abs(reportedPos - smoothPositionState.longValue) > LyricsTimingEngine.SEEK_SNAP_THRESHOLD_MS) {
+                interpolator.snap(reportedPos)
+                smoothPositionState.longValue = reportedPos.coerceAtLeast(0L)
+            }
         }
     }
 
@@ -165,7 +233,7 @@ fun SynchronizedLyricsView(
                 withFrameNanos { frameNanos ->
                     val frameMs = frameNanos / 1_000_000L
                     smoothPositionState.longValue = interpolator.update(
-                        reportedPositionMs = latestPositionMs,
+                        reportedPositionMs = latestPositionProvider(),
                         isPlaying = latestIsPlaying,
                         frameTimeMs = frameMs
                     )

@@ -56,8 +56,8 @@ fun NowPlayingBackground(
     canvasArtwork: CanvasArtworkResult?,
     isPlaying: Boolean,
     isCanvasPaused: Boolean = false,
-    selectedVisualizer: VisualizerDefinition = VisualizerRepository.BuiltInPresets.first(),
-    currentPositionMs: Long = 0L,
+    selectedVisualizer: VisualizerDefinition = VisualizerRepository.DefaultPreset,
+    positionMsProvider: () -> Long = { 0L },
     durationMs: Long = 0L,
     accentColor: Color = LocalAccentColor.current,
     isOverlayActive: Boolean = false,
@@ -78,6 +78,19 @@ fun NowPlayingBackground(
             ?: track.artworkResId?.let { resId ->
                 "android.resource://${appContext.packageName}/$resId"
             }
+    }
+    val artworkRequest = remember(resolvedArtworkUri, isAmbientBlurredStage, appContext) {
+        resolvedArtworkUri?.let { uri ->
+            ImageRequest.Builder(appContext)
+                .data(uri)
+                .crossfade(350)
+                .apply {
+                    if (isAmbientBlurredStage) {
+                        size(256)
+                    }
+                }
+                .build()
+        }
     }
 
     var extractedAmbient by remember(resolvedArtworkUri, isDark) {
@@ -118,7 +131,7 @@ fun NowPlayingBackground(
                 .fillMaxHeight(if (isAmbientBlurredStage) 1f else 0.74f)
                 .align(Alignment.TopCenter)
         ) {
-            if (resolvedArtworkUri.isNullOrBlank()) {
+            if (artworkRequest == null) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -132,10 +145,7 @@ fun NowPlayingBackground(
                 }
             } else {
                 AsyncImage(
-                    model = ImageRequest.Builder(appContext)
-                        .data(resolvedArtworkUri)
-                        .crossfade(350)
-                        .build(),
+                    model = artworkRequest,
                     imageLoader = sharedImageLoader,
                     contentDescription = track.album.ifBlank { track.title },
                     contentScale = ContentScale.Crop,
@@ -205,11 +215,12 @@ fun NowPlayingBackground(
         if (selectedVisualizer.renderMode != VisualizerRenderMode.None) {
             GpuMusicVisualizer(
                 definition = selectedVisualizer,
-                currentPositionMs = currentPositionMs,
+                positionMsProvider = positionMsProvider,
                 durationMs = durationMs,
                 isPlaying = isPlaying,
                 currentTrack = track,
                 accentColor = accentColor,
+                isVisible = !isOverlayActive,
                 modifier = Modifier.fillMaxSize()
             )
         }

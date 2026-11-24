@@ -6,8 +6,10 @@ import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.os.PowerManager
 import android.util.Log
 import androidx.annotation.OptIn
+import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
@@ -16,6 +18,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
@@ -23,7 +26,6 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
-import coil.Coil
 import coil.request.ImageRequest
 import coil.size.Scale
 import com.xperience.player.R
@@ -39,7 +41,9 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -54,15 +58,34 @@ import java.io.ByteArrayOutputStream
 class AudioPlayerService private constructor(
     private val appContext: Context
 ) {
-    private val scope = CoroutineScope(Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val ytmService = YouTubeMusicService.getInstance()
 
     val dspController: AudioDspController = AudioDspController.getInstance(appContext)
     val sleepTimerManager: SleepTimerManager = SleepTimerManager.getInstance(appContext)
 
+    private val wakeLockLock = Any()
+    private val transitionWakeLock: PowerManager.WakeLock? by lazy {
+        runCatching {
+            val pm = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, TRANSITION_WAKE_LOCK_TAG)?.apply {
+                setReferenceCounted(false)
+            }
+        }.getOrNull()
+    }
+
     private val audioAttributes = AudioAttributes.Builder()
         .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
         .setUsage(C.USAGE_MEDIA)
+        .build()
+
+    private val loadControl = DefaultLoadControl.Builder()
+        .setBufferDurationsMs(
+            15_000, // minBufferMs
+            30_000, // maxBufferMs
+            1_000,  // bufferForPlaybackMs
+            2_000   // bufferForPlaybackAfterRebufferMs
+        )
         .build()
 
     private val renderersFactory = object : DefaultRenderersFactory(appContext) {
@@ -81,7 +104,8 @@ class AudioPlayerService private constructor(
 
     val exoPlayer: ExoPlayer = ExoPlayer.Builder(appContext, renderersFactory)
         .setAudioAttributes(audioAttributes, true)
-        .setWakeMode(androidx.media3.common.C.WAKE_MODE_NETWORK)
+        .setLoadControl(loadControl)
+        .setWakeMode(C.WAKE_MODE_LOCAL)
         .setHandleAudioBecomingNoisy(true)
         .build().apply {
             volume = 1.0f
@@ -89,6 +113,16 @@ class AudioPlayerService private constructor(
         }
 
     val forwardingPlayer: Player = object : ForwardingPlayer(exoPlayer) {
+        override fun getPlaybackState(): Int {
+            val state = super.getPlaybackState()
+            // Keep MediaSessionService in foreground while transitioning/downloading next track
+            return if (isLoadingMedia && (state == Player.STATE_ENDED || state == Player.STATE_IDLE)) {
+                Player.STATE_BUFFERING
+            } else {
+                state
+            }
+        }
+
         override fun getAvailableCommands(): Player.Commands {
             val builder = super.getAvailableCommands().buildUpon()
                 .add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
@@ -163,6 +197,9 @@ class AudioPlayerService private constructor(
     private val _playbackState = MutableStateFlow(PlaybackState(repeatMode = PlaybackRepeatMode.Off))
     val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
 
+    private val _playbackPositionMs = MutableStateFlow(0L)
+    val playbackPositionMs: StateFlow<Long> = _playbackPositionMs.asStateFlow()
+
     var onTrackPlayed: ((TrackItem) -> Unit)? = null
 
     /**
@@ -198,7 +235,8 @@ class AudioPlayerService private constructor(
         onAutoAdvance = ::onProgressiveAutoAdvance,
         onQueueEndedExhausted = {
             isLoadingMedia = false
-            _playbackState.update { it.copy(isLoading = false) }
+            releaseTransitionWakeLock()
+            _playbackState.update { it.copy(isLoading = false, isPlaying = false) }
             seekTo(0L)
             pause()
         },
@@ -206,7 +244,10 @@ class AudioPlayerService private constructor(
     )
     private var progressPollJob: Job? = null
     private var audioLoadJob: Job? = null
-    private var playbackPreparationJob: Job? = null
+    private var artworkLoadJob: Job? = null
+    private var nextTrackPreloadJob: Job? = null
+    @Volatile private var preloadedNextTrackId: String? = null
+    @Volatile private var consecutiveAutoSkipFailures: Int = 0
     @Volatile private var isLoadingMedia: Boolean = false
     @Volatile private var preparedForCurrentSession: Boolean = false
     @Volatile private var activeLoadingSessionId: Long = 0L
@@ -227,9 +268,12 @@ class AudioPlayerService private constructor(
         exoPlayer.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 Log.d(TAG, "ExoPlayer onIsPlayingChanged: $isPlaying")
+                val currentPos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                _playbackPositionMs.value = currentPos
                 _playbackState.update {
                     it.copy(
                         isPlaying = isPlaying,
+                        currentPositionMs = currentPos,
                         isLoading = resolveLoadingState(isLoadingMedia, exoPlayer.playbackState)
                     )
                 }
@@ -246,13 +290,20 @@ class AudioPlayerService private constructor(
                 if (playbackState == Player.STATE_READY) {
                     if (preparedForCurrentSession) {
                         isLoadingMedia = false
+                        consecutiveAutoSkipFailures = 0
+                        releaseTransitionWakeLock()
                     }
                     _playbackState.update {
                         it.copy(isLoading = resolveLoadingState(isLoadingMedia, playbackState))
                     }
                     val rawDuration = exoPlayer.duration
                     if (!isLoadingMedia && rawDuration != C.TIME_UNSET && rawDuration > 0L) {
-                        updateNaturalDuration(rawDuration)
+                        if (rawDuration != _playbackState.value.durationMs) {
+                            updateNaturalDuration(rawDuration)
+                        }
+                        if (rawDuration <= SHORT_TRACK_IMMEDIATE_PRELOAD_MS) {
+                            maybePreloadNextTrack(exoPlayer.currentPosition.coerceAtLeast(0L), rawDuration)
+                        }
                     }
                 } else if (playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_IDLE) {
                     _playbackState.update {
@@ -274,10 +325,40 @@ class AudioPlayerService private constructor(
 
             override fun onPlayerError(error: PlaybackException) {
                 isLoadingMedia = false
-                _playbackState.update { it.copy(isLoading = false) }
+                releaseTransitionWakeLock()
+                _playbackState.update { it.copy(isLoading = false, isPlaying = false) }
                 Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName} - ${error.message}", error)
             }
         })
+    }
+
+    private fun acquireTransitionWakeLock() {
+        synchronized(wakeLockLock) {
+            runCatching {
+                transitionWakeLock?.acquire(TRANSITION_WAKE_LOCK_TIMEOUT_MS)
+            }.onFailure { e ->
+                Log.w(TAG, "Failed to acquire transition wake lock: ${e.message}")
+            }
+        }
+    }
+
+    private fun releaseTransitionWakeLock() {
+        synchronized(wakeLockLock) {
+            runCatching {
+                val wl = transitionWakeLock
+                if (wl != null && wl.isHeld) {
+                    wl.release()
+                }
+            }.onFailure { e ->
+                Log.w(TAG, "Failed to release transition wake lock: ${e.message}")
+            }
+        }
+    }
+
+    private fun cancelNextTrackPreload() {
+        nextTrackPreloadJob?.cancel()
+        nextTrackPreloadJob = null
+        preloadedNextTrackId = null
     }
 
     fun attachMediaSession(session: MediaSession?) {
@@ -290,8 +371,18 @@ class AudioPlayerService private constructor(
     }
 
     fun ensureServiceStarted() {
+        val intent = Intent(appContext, PlaybackService::class.java)
+        val shouldStartForeground = attachedMediaSession == null &&
+            (isLoadingMedia || _playbackState.value.isPlaying || exoPlayer.isPlaying)
+        if (shouldStartForeground) {
+            try {
+                ContextCompat.startForegroundService(appContext, intent)
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "startForegroundService failed, falling back to startService: ${e.message}")
+            }
+        }
         try {
-            val intent = Intent(appContext, PlaybackService::class.java)
             appContext.startService(intent)
         } catch (e: Exception) {
             Log.w(TAG, "Could not start PlaybackService", e)
@@ -304,6 +395,8 @@ class AudioPlayerService private constructor(
         startPositionMs: Long = 0L,
         autoPlay: Boolean = true
     ) {
+        consecutiveAutoSkipFailures = 0
+        cancelNextTrackPreload()
         progressiveQueueManager.onQueueReplaced()
         val snapshot = queueController.setQueue(tracks, startIndex)
         if (snapshot.queue.isEmpty() || snapshot.currentTrack == null) {
@@ -325,6 +418,8 @@ class AudioPlayerService private constructor(
      */
     fun playSingleTrack(track: TrackItem) {
         Log.d(TAG, "playSingleTrack invoked: ${track.id} - ${track.title}")
+        consecutiveAutoSkipFailures = 0
+        cancelNextTrackPreload()
         progressiveQueueManager.onQueueReplaced()
         val snapshot = queueController.playSingleTrack(track)
         playResolvedTrack(track, snapshot)
@@ -333,6 +428,8 @@ class AudioPlayerService private constructor(
 
     fun playTrack(track: TrackItem) {
         Log.d(TAG, "playTrack invoked: ${track.id} - ${track.title}")
+        consecutiveAutoSkipFailures = 0
+        cancelNextTrackPreload()
         progressiveQueueManager.cancelEndAdvance()
         val snapshot = queueController.playTrack(track)
         playResolvedTrack(track, snapshot)
@@ -340,6 +437,8 @@ class AudioPlayerService private constructor(
     }
 
     fun playQueueIndex(index: Int) {
+        consecutiveAutoSkipFailures = 0
+        cancelNextTrackPreload()
         progressiveQueueManager.cancelEndAdvance()
         val track = queueController.playQueueIndex(index) ?: return
         Log.d(TAG, "playQueueIndex invoked: [$index] ${track.id} - ${track.title}")
@@ -349,6 +448,7 @@ class AudioPlayerService private constructor(
 
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
         if (!queueController.moveQueueItem(fromIndex, toIndex)) return
+        cancelNextTrackPreload()
         val snapshot = queueController.snapshot()
         _playbackState.update {
             it.copy(
@@ -368,9 +468,12 @@ class AudioPlayerService private constructor(
         val sessionId = ++activeLoadingSessionId
         isLoadingMedia = true
         preparedForCurrentSession = false
+        cancelNextTrackPreload()
+        acquireTransitionWakeLock()
         dspController.onTrackTransition()
 
         val initialPos = startPositionMs.coerceAtLeast(0L)
+        _playbackPositionMs.value = initialPos
         _playbackState.update {
             it.copy(
                 queue = snapshot.queue,
@@ -386,27 +489,14 @@ class AudioPlayerService private constructor(
         ensureServiceStarted()
 
         audioLoadJob?.cancel()
-        playbackPreparationJob?.cancel()
+        artworkLoadJob?.cancel()
 
-        val isLocalPlayableUri = track.audioUrl != null && 
-            (track.audioUrl.startsWith("content://") || 
-             track.audioUrl.startsWith("file://") || 
-             track.audioUrl.endsWith(".mp3", ignoreCase = true) || 
-             track.audioUrl.endsWith(".m4a", ignoreCase = true) ||
-             track.audioUrl.endsWith(".flac", ignoreCase = true) ||
-             track.audioUrl.endsWith(".wav", ignoreCase = true) ||
-             track.audioUrl.endsWith(".ogg", ignoreCase = true))
-
-        if (isLocalPlayableUri) {
+        if (isLocalPlayableTrack(track)) {
             Log.d(TAG, "Playing local audio: ${track.audioUrl}")
             startPlaybackPrepared(track, Uri.parse(track.audioUrl), sessionId, initialPos, autoPlay)
         } else {
             // Asynchronously resolve & download YouTube Music audio into local cache
-            val rawVideoId = when {
-                track.id.startsWith("ytm_") -> track.id.removePrefix("ytm_")
-                track.audioUrl?.contains("v=") == true -> track.audioUrl.substringAfter("v=").substringBefore("&")
-                else -> null
-            }
+            val rawVideoId = extractOnlineVideoId(track)
 
             audioLoadJob = scope.launch(Dispatchers.IO) {
                 try {
@@ -419,40 +509,70 @@ class AudioPlayerService private constructor(
 
                     if (!videoIdToPlay.isNullOrBlank()) {
                         Log.d(TAG, "Downloading/loading cached audio for videoId: $videoIdToPlay")
-                        val audioFile = ytmService.getOrDownloadAudioFile(videoIdToPlay, appContext)
+                        var audioFile = ytmService.getOrDownloadAudioFile(videoIdToPlay, appContext)
+                        if (audioFile == null || !audioFile.exists() || audioFile.length() <= 50_000) {
+                            Log.w(TAG, "First audio download attempt failed for $videoIdToPlay, retrying in ${DOWNLOAD_RETRY_DELAY_MS}ms...")
+                            delay(DOWNLOAD_RETRY_DELAY_MS)
+                            if (activeLoadingSessionId != sessionId) return@launch
+                            audioFile = ytmService.getOrDownloadAudioFile(videoIdToPlay, appContext)
+                        }
 
-                        withContext(Dispatchers.Main) {
+                        withContext(Dispatchers.Main.immediate) {
                             if (activeLoadingSessionId != sessionId) return@withContext
                             if (audioFile != null && audioFile.exists() && audioFile.length() > 50_000) {
                                 Log.d(TAG, "Playing cached audio file: ${audioFile.absolutePath} (${audioFile.length()} bytes)")
                                 startPlaybackPrepared(track, Uri.fromFile(audioFile), sessionId, initialPos, autoPlay)
                             } else {
-                                Log.w(TAG, "Audio file download returned null, fallback simulation ticker")
-                                isLoadingMedia = false
-                                _playbackState.update { it.copy(isPlaying = autoPlay, isLoading = false) }
-                                if (autoPlay) startProgressPolling()
+                                handleOnlineDownloadFailure(
+                                    reason = "Audio file download returned null/empty after retry for $videoIdToPlay",
+                                    autoPlay = autoPlay
+                                )
                             }
                         }
                     } else {
-                        withContext(Dispatchers.Main) {
+                        withContext(Dispatchers.Main.immediate) {
                             if (activeLoadingSessionId != sessionId) return@withContext
-                            Log.w(TAG, "Could not resolve videoId, fallback simulation ticker")
-                            isLoadingMedia = false
-                            _playbackState.update { it.copy(isPlaying = autoPlay, isLoading = false) }
-                            if (autoPlay) startProgressPolling()
+                            handleOnlineDownloadFailure(
+                                reason = "Could not resolve videoId for ${track.title}",
+                                autoPlay = autoPlay
+                            )
                         }
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (t: Throwable) {
                     Log.e(TAG, "Unexpected error loading audio for ${track.title}: ${t.message}", t)
-                    withContext(Dispatchers.Main) {
+                    withContext(Dispatchers.Main.immediate) {
                         if (activeLoadingSessionId != sessionId) return@withContext
-                        isLoadingMedia = false
-                        _playbackState.update { it.copy(isLoading = false) }
+                        handleOnlineDownloadFailure(
+                            reason = "Unexpected error loading audio: ${t.message}",
+                            autoPlay = autoPlay
+                        )
                     }
                 }
             }
+        }
+    }
+
+    private fun handleOnlineDownloadFailure(reason: String, autoPlay: Boolean) {
+        Log.w(TAG, "Online track load failed ($reason)")
+        isLoadingMedia = false
+        stopProgressPolling()
+        _playbackState.update { it.copy(isPlaying = false, isLoading = false) }
+
+        val snapshot = queueController.snapshot()
+        val hasRemaining = snapshot.currentIndex >= 0 && snapshot.currentIndex < snapshot.queue.lastIndex
+        val action = resolveDownloadFailureAction(
+            autoPlay = autoPlay,
+            hasRemainingQueueTracks = hasRemaining,
+            consecutiveFailures = consecutiveAutoSkipFailures
+        )
+        if (action == DownloadFailureAction.AUTO_SKIP_NEXT) {
+            consecutiveAutoSkipFailures++
+            Log.w(TAG, "Auto-skipping failed track (attempt $consecutiveAutoSkipFailures/$MAX_CONSECUTIVE_AUTO_SKIP_FAILURES)")
+            advanceToNextTrack()
+        } else {
+            releaseTransitionWakeLock()
         }
     }
 
@@ -463,42 +583,89 @@ class AudioPlayerService private constructor(
         startPositionMs: Long = 0L,
         autoPlay: Boolean = true
     ) {
-        playbackPreparationJob?.cancel()
-        playbackPreparationJob = scope.launch(Dispatchers.IO) {
-            try {
-                // Pre-load compact artwork bytes (256x256, 75% JPEG ~10KB) so SystemUI has dynamic cover immediately
-                val artworkBytes = loadArtworkBytes(track.artworkUri)
-                val metadata = buildMediaMetadata(track, artworkBytes)
-                val mediaItem = MediaItem.Builder()
-                    .setMediaId(track.id)
-                    .setUri(uri)
-                    .setMediaMetadata(metadata)
-                    .build()
+        if (activeLoadingSessionId != sessionId) return
 
-                withContext(Dispatchers.Main) {
-                    if (activeLoadingSessionId != sessionId) return@withContext
-                    preparedForCurrentSession = true
-                    exoPlayer.setMediaItem(mediaItem)
-                    if (startPositionMs > 0L) {
-                        exoPlayer.seekTo(startPositionMs)
+        // Start ExoPlayer immediately with artworkUri metadata (never block audio playback on artwork download)
+        val initialMetadata = buildMediaMetadata(track, artworkBytes = null)
+        val initialMediaItem = MediaItem.Builder()
+            .setMediaId(track.id)
+            .setUri(uri)
+            .setMediaMetadata(initialMetadata)
+            .build()
+
+        preparedForCurrentSession = true
+        exoPlayer.setMediaItem(initialMediaItem)
+        if (startPositionMs > 0L) {
+            exoPlayer.seekTo(startPositionMs)
+        }
+        exoPlayer.prepare()
+        if (autoPlay) {
+            exoPlayer.play()
+        } else {
+            exoPlayer.pause()
+        }
+        updateSessionLayout()
+
+        // Asynchronously enrich SystemUI MediaSession notification with compact embedded artwork bytes
+        artworkLoadJob?.cancel()
+        if (!track.artworkUri.isNullOrBlank()) {
+            artworkLoadJob = scope.launch(Dispatchers.IO) {
+                try {
+                    val artworkBytes = loadArtworkBytes(track.artworkUri)
+                    if (artworkBytes == null || artworkBytes.isEmpty()) return@launch
+                    withContext(Dispatchers.Main.immediate) {
+                        if (activeLoadingSessionId != sessionId) return@withContext
+                        runCatching {
+                            val current = exoPlayer.currentMediaItem
+                            if (current != null && current.mediaId == track.id && exoPlayer.mediaItemCount > 0) {
+                                val updatedMetadata = buildMediaMetadata(track, artworkBytes)
+                                val updatedItem = current.buildUpon()
+                                    .setMediaMetadata(updatedMetadata)
+                                    .build()
+                                exoPlayer.replaceMediaItem(0, updatedItem)
+                            }
+                        }
                     }
-                    exoPlayer.prepare()
-                    if (autoPlay) {
-                        exoPlayer.play()
-                    } else {
-                        exoPlayer.pause()
-                    }
-                    updateSessionLayout()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Async artwork metadata update skipped for ${track.title}: ${t.message}")
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (t: Throwable) {
-                Log.e(TAG, "Unexpected error preparing playback for ${track.title}: ${t.message}", t)
-                withContext(Dispatchers.Main) {
-                    if (activeLoadingSessionId != sessionId) return@withContext
-                    isLoadingMedia = false
-                    _playbackState.update { it.copy(isLoading = false) }
-                }
+            }
+        }
+    }
+
+    private fun maybePreloadNextTrack(currentPositionMs: Long, durationMs: Long) {
+        if (durationMs <= 0L) return
+        val remainingMs = durationMs - currentPositionMs
+        if (remainingMs > NEXT_TRACK_PRELOAD_WINDOW_MS && durationMs > SHORT_TRACK_IMMEDIATE_PRELOAD_MS) {
+            return
+        }
+
+        val repeatMode = _playbackState.value.repeatMode
+        if (repeatMode == PlaybackRepeatMode.RepeatOne) return
+
+        val snapshot = queueController.snapshot()
+        if (snapshot.queue.isEmpty() || snapshot.currentIndex !in snapshot.queue.indices) return
+
+        val nextIndex = when {
+            snapshot.currentIndex + 1 < snapshot.queue.size -> snapshot.currentIndex + 1
+            repeatMode == PlaybackRepeatMode.RepeatAll && snapshot.queue.size > 1 -> 0
+            else -> return
+        }
+        val nextTrack = snapshot.queue[nextIndex]
+        if (nextTrack.id == preloadedNextTrackId || isLocalPlayableTrack(nextTrack)) return
+
+        val nextVideoId = extractOnlineVideoId(nextTrack) ?: return
+        preloadedNextTrackId = nextTrack.id
+        nextTrackPreloadJob?.cancel()
+        nextTrackPreloadJob = scope.launch(Dispatchers.IO) {
+            runCatching {
+                Log.d(TAG, "Pre-warming next online track cache: ${nextTrack.title} ($nextVideoId)")
+                ytmService.getOrDownloadAudioFile(nextVideoId, appContext)
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                Log.w(TAG, "Next track pre-warm skipped for $nextVideoId: ${err.message}")
             }
         }
     }
@@ -523,7 +690,7 @@ class AudioPlayerService private constructor(
     private suspend fun loadArtworkBytes(artworkUri: String?): ByteArray? = withContext(Dispatchers.IO) {
         if (artworkUri.isNullOrBlank()) return@withContext null
         try {
-            val imageLoader = Coil.imageLoader(appContext)
+            val imageLoader = MediaNetworkClients.getImageLoader(appContext)
             val request = ImageRequest.Builder(appContext)
                 .data(artworkUri)
                 .size(256, 256)
@@ -565,17 +732,31 @@ class AudioPlayerService private constructor(
         if (exoPlayer.mediaItemCount > 0) {
             exoPlayer.play()
         } else {
-            _playbackState.update { it.copy(isPlaying = true) }
-            startProgressPolling()
+            val current = _playbackState.value.currentTrack
+            if (current != null && !isLoadingMedia) {
+                playResolvedTrack(
+                    track = current,
+                    snapshot = queueController.snapshot(),
+                    startPositionMs = _playbackPositionMs.value,
+                    autoPlay = true
+                )
+            }
         }
     }
 
     fun pause() {
         progressiveQueueManager.cancelEndAdvance()
+        releaseTransitionWakeLock()
         if (exoPlayer.mediaItemCount > 0) {
             exoPlayer.pause()
         }
-        _playbackState.update { it.copy(isPlaying = false) }
+        val currentPos = if (exoPlayer.mediaItemCount > 0) {
+            exoPlayer.currentPosition.coerceAtLeast(0L)
+        } else {
+            _playbackPositionMs.value
+        }
+        _playbackPositionMs.value = currentPos
+        _playbackState.update { it.copy(isPlaying = false, currentPositionMs = currentPos) }
         stopProgressPolling()
     }
 
@@ -588,6 +769,7 @@ class AudioPlayerService private constructor(
     }
 
     fun skipNext() {
+        consecutiveAutoSkipFailures = 0
         advanceToNextTrack()
     }
 
@@ -608,6 +790,7 @@ class AudioPlayerService private constructor(
         }
         if (repeatMode == PlaybackRepeatMode.Off) {
             stopProgressPolling()
+            acquireTransitionWakeLock()
             progressiveQueueManager.resolveAndAdvanceFromEnd(repeatMode)
         } else {
             seekTo(0L)
@@ -617,10 +800,12 @@ class AudioPlayerService private constructor(
 
     fun skipPrevious() {
         if (queueController.isEmpty()) return
-        if (_playbackState.value.currentPositionMs > 3000L) {
+        val currentPos = maxOf(_playbackPositionMs.value, _playbackState.value.currentPositionMs)
+        if (currentPos > 3000L) {
             seekTo(0L)
             return
         }
+        consecutiveAutoSkipFailures = 0
         progressiveQueueManager.cancelEndAdvance()
         val prevTrack = queueController.skipPrevious() ?: return
         playResolvedTrack(prevTrack, queueController.snapshot())
@@ -632,6 +817,7 @@ class AudioPlayerService private constructor(
         if (exoPlayer.mediaItemCount > 0) {
             exoPlayer.seekTo(clamped)
         }
+        _playbackPositionMs.value = clamped
         _playbackState.update { it.copy(currentPositionMs = clamped) }
     }
 
@@ -716,31 +902,25 @@ class AudioPlayerService private constructor(
         progressPollJob = scope.launch {
             while (isActive) {
                 if (!isLoadingMedia && exoPlayer.isPlaying) {
-                    val pos = exoPlayer.currentPosition
+                    val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
                     val rawDuration = exoPlayer.duration
-                    _playbackState.update { it.copy(currentPositionMs = pos) }
-                    if (rawDuration != C.TIME_UNSET && rawDuration > 0L) {
-                        updateNaturalDuration(rawDuration)
-                    }
-                } else if (!isLoadingMedia && _playbackState.value.isPlaying) {
-                    // Simulation ticker fallback (scales progression by effective DSP speed)
-                    val cur = _playbackState.value
-                    val stepMs = (33f * dspController.dspState.value.effectiveSpeed).toLong().coerceAtLeast(10L)
-                    val next = cur.currentPositionMs + stepMs
-                    val dur = cur.durationMs.coerceAtLeast(180_000L)
-                    if (next >= dur) {
-                        if (sleepTimerManager.consumeEndOfTrackShouldPause()) {
-                            _playbackState.update { it.copy(currentPositionMs = 0L) }
-                        } else if (cur.repeatMode == PlaybackRepeatMode.RepeatOne) {
-                            _playbackState.update { it.copy(currentPositionMs = 0L) }
-                        } else {
-                            advanceToNextTrack()
+                    _playbackPositionMs.value = pos
+                    val effectiveDuration = if (rawDuration != C.TIME_UNSET && rawDuration > 0L) {
+                        if (rawDuration != _playbackState.value.durationMs) {
+                            updateNaturalDuration(rawDuration)
                         }
+                        rawDuration
                     } else {
-                        _playbackState.update { it.copy(currentPositionMs = next, durationMs = dur) }
+                        _playbackState.value.durationMs
                     }
+                    maybePreloadNextTrack(pos, effectiveDuration)
                 }
-                delay(33L)
+                val intervalMs = if (_playbackPositionMs.subscriptionCount.value > 0) {
+                    ACTIVE_UI_POLL_INTERVAL_MS
+                } else {
+                    BACKGROUND_POLL_INTERVAL_MS
+                }
+                delay(intervalMs)
             }
         }
     }
@@ -753,15 +933,39 @@ class AudioPlayerService private constructor(
     fun release() {
         progressiveQueueManager.onQueueReplaced()
         audioLoadJob?.cancel()
-        playbackPreparationJob?.cancel()
+        artworkLoadJob?.cancel()
+        cancelNextTrackPreload()
         stopProgressPolling()
+        releaseTransitionWakeLock()
+        onTrackPlayed = null
+        fallbackSimilarTracksProvider = null
+        attachedMediaSession = null
         sleepTimerManager.cancelTimer()
         dspController.release()
         exoPlayer.release()
+        scope.cancel()
+        synchronized(Companion) {
+            if (instance === this) {
+                instance = null
+            }
+        }
+    }
+
+    internal enum class DownloadFailureAction {
+        AUTO_SKIP_NEXT,
+        STOP_CLEANLY
     }
 
     companion object {
         private const val TAG = "AudioPlayer"
+        private const val TRANSITION_WAKE_LOCK_TAG = "XperiencePlayer:TrackTransition"
+        private const val TRANSITION_WAKE_LOCK_TIMEOUT_MS = 60_000L
+        private const val DOWNLOAD_RETRY_DELAY_MS = 500L
+        internal const val MAX_CONSECUTIVE_AUTO_SKIP_FAILURES = 3
+        private const val NEXT_TRACK_PRELOAD_WINDOW_MS = 25_000L
+        private const val SHORT_TRACK_IMMEDIATE_PRELOAD_MS = 30_000L
+        private const val ACTIVE_UI_POLL_INTERVAL_MS = 33L
+        private const val BACKGROUND_POLL_INTERVAL_MS = 1_000L
         private const val SIMILAR_QUEUE_BATCH_SIZE = 20
 
         @Volatile
@@ -770,6 +974,40 @@ class AudioPlayerService private constructor(
         fun getInstance(context: Context): AudioPlayerService {
             return instance ?: synchronized(this) {
                 instance ?: AudioPlayerService(context.applicationContext).also { instance = it }
+            }
+        }
+
+        internal fun isLocalPlayableTrack(track: TrackItem): Boolean {
+            val url = track.audioUrl ?: return false
+            return url.startsWith("content://") ||
+                url.startsWith("file://") ||
+                url.endsWith(".mp3", ignoreCase = true) ||
+                url.endsWith(".m4a", ignoreCase = true) ||
+                url.endsWith(".flac", ignoreCase = true) ||
+                url.endsWith(".wav", ignoreCase = true) ||
+                url.endsWith(".ogg", ignoreCase = true)
+        }
+
+        internal fun extractOnlineVideoId(track: TrackItem): String? = when {
+            track.id.startsWith("ytm_") -> track.id.removePrefix("ytm_").takeIf { it.isNotBlank() }
+            track.audioUrl?.contains("v=") == true -> track.audioUrl.substringAfter("v=").substringBefore("&").takeIf { it.isNotBlank() }
+            else -> null
+        }
+
+        /**
+         * Pure decision helper for online download failure: never starts a silent fake
+         * simulation ticker; either auto-skips to the next queued track (up to
+         * [MAX_CONSECUTIVE_AUTO_SKIP_FAILURES] consecutive times) or stops cleanly.
+         */
+        internal fun resolveDownloadFailureAction(
+            autoPlay: Boolean,
+            hasRemainingQueueTracks: Boolean,
+            consecutiveFailures: Int
+        ): DownloadFailureAction {
+            return if (autoPlay && hasRemainingQueueTracks && consecutiveFailures < MAX_CONSECUTIVE_AUTO_SKIP_FAILURES) {
+                DownloadFailureAction.AUTO_SKIP_NEXT
+            } else {
+                DownloadFailureAction.STOP_CLEANLY
             }
         }
 
@@ -999,7 +1237,19 @@ internal class PlaybackQueueController {
         val unique = filterUniqueCandidates(candidates)
         if (unique.isEmpty()) return null
         queue.addAll(unique)
+        if (queue.size > MAX_QUEUE_SIZE && currentIndex > PLAYED_HISTORY_KEEP_COUNT) {
+            val trimCount = (currentIndex - PLAYED_HISTORY_KEEP_COUNT).coerceAtMost(queue.size - 1)
+            if (trimCount > 0) {
+                queue.subList(0, trimCount).clear()
+                currentIndex -= trimCount
+            }
+        }
         return snapshot()
+    }
+
+    companion object {
+        internal const val MAX_QUEUE_SIZE = 250
+        internal const val PLAYED_HISTORY_KEEP_COUNT = 50
     }
 
     private fun normalizeTrackIdKey(id: String): String? {

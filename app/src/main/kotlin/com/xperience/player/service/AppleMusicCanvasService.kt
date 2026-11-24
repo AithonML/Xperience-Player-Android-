@@ -97,8 +97,8 @@ class AppleMusicCanvasService(
         private const val ARTIST_ID_TTL_MS = 30L * 24L * 60L * 60L * 1000L
         private const val SCRAPE_FAILURE_BACKOFF_MS = 10L * 60L * 1000L
         private const val MAX_ALBUM_PROBES = 3
-        private const val MAX_ALBUM_CANVAS_CACHE_ENTRIES = 300
-        private const val MAX_ARTIST_CACHE_ENTRIES = 300
+        private const val MAX_ALBUM_CANVAS_CACHE_ENTRIES = 512
+        private const val MAX_ARTIST_CACHE_ENTRIES = 256
         private const val MAX_ARTIST_ID_CACHE_ENTRIES = 400
 
         private val INVALID_ALBUM_NAMES = setOf(
@@ -215,6 +215,9 @@ class AppleMusicCanvasService(
 
         private val DIACRITICS_REGEX = Regex("\\p{InCombiningDiacriticalMarks}+")
         private val TOKEN_SPLIT_REGEX = Regex("[^a-z0-9]+")
+        private val NON_ALPHANUM_REGEX = Regex("[^a-z0-9]")
+        private val TOPIC_SUFFIX_REGEX = Regex("\\s*-\\s*Topic$", RegexOption.IGNORE_CASE)
+        private val VEVO_SUFFIX_REGEX = Regex("\\s*VEVO$", RegexOption.IGNORE_CASE)
         private val FEATURE_DELIM_REGEX = Regex("\\s*(?:\\bfeat\\.?\\b|\\bft\\.?\\b|\\bfeaturing\\b|,|&|;|/|\\+|\\bx\\b)\\s*", RegexOption.IGNORE_CASE)
         private val META_ENV_REGEX = Pattern.compile(
             "<meta[^>]+name=[\"']desktop-music-app/config/environment[\"'][^>]+content=[\"']([^\"']+)[\"']|" +
@@ -1999,8 +2002,8 @@ class AppleMusicCanvasService(
 
     private fun cleanArtistName(artist: String): String {
         return artist
-            .replace(Regex("\\s*-\\s*Topic$", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("\\s*VEVO$", RegexOption.IGNORE_CASE), "")
+            .replace(TOPIC_SUFFIX_REGEX, "")
+            .replace(VEVO_SUFFIX_REGEX, "")
             .trim()
     }
 
@@ -2058,7 +2061,7 @@ class AppleMusicCanvasService(
             .replace(DIACRITICS_REGEX, "")
         return decomposed
             .lowercase(Locale.ROOT)
-            .replace(Regex("[^a-z0-9]"), "")
+            .replace(NON_ALPHANUM_REGEX, "")
             .trim()
     }
 

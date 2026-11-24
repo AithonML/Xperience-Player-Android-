@@ -21,12 +21,15 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,8 +54,10 @@ import com.xperience.player.ui.component.liquidGlass
 import com.xperience.player.ui.component.shapes.ContinuousRoundedRectangle
 import com.xperience.player.ui.theme.AppThemeColors
 import com.xperience.player.ui.theme.GoogleSans
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -61,12 +66,32 @@ private val SquigglyCapsuleShape = ContinuousRoundedRectangle(percent = 50)
 private const val TWO_PI = (2.0 * PI).toFloat()
 
 /**
- * Native Android 13+ / Media3 style animated Squiggly waveform progress bar
- * housed inside a taller LiquidGlass capsule for rich optical refraction.
- *
- * - Animates the sinusoidal wave phase smoothly at display refresh rate while [isPlaying] is true.
- * - Smoothly flattens into a straight line when paused or actively scrubbing.
- * - Features a glowing interactive thumb and elapsed / total duration timestamps.
+ * Overload collecting [playbackPositionMsFlow] without triggering composition reads in the parent.
+ */
+@Composable
+fun SquigglyProgressBar(
+    playbackPositionMsFlow: StateFlow<Long>,
+    durationMs: Long,
+    isPlaying: Boolean,
+    accentColor: Color,
+    appColors: AppThemeColors,
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val positionState = playbackPositionMsFlow.collectAsState()
+    SquigglyProgressBar(
+        positionMsProvider = { positionState.value },
+        durationMs = durationMs,
+        isPlaying = isPlaying,
+        accentColor = accentColor,
+        appColors = appColors,
+        onSeek = onSeek,
+        modifier = modifier
+    )
+}
+
+/**
+ * Backwards-compatible overload accepting a plain [currentPositionMs] value.
  */
 @Composable
 fun SquigglyProgressBar(
@@ -78,49 +103,67 @@ fun SquigglyProgressBar(
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val latestPosition by rememberUpdatedState(currentPositionMs)
+    SquigglyProgressBar(
+        positionMsProvider = { latestPosition },
+        durationMs = durationMs,
+        isPlaying = isPlaying,
+        accentColor = accentColor,
+        appColors = appColors,
+        onSeek = onSeek,
+        modifier = modifier
+    )
+}
+
+/**
+ * Native Android 13+ / Media3 style animated Squiggly waveform progress bar
+ * housed inside a taller LiquidGlass capsule for rich optical refraction.
+ *
+ * - Animates the sinusoidal wave phase smoothly at display refresh rate while [isPlaying] is true.
+ * - Reads [positionMsProvider] inside draw phase and a 1 Hz timestamp leaf (zero 30 Hz recompositions).
+ * - Smoothly flattens into a straight line when paused or actively scrubbing.
+ * - Features a glowing interactive thumb and elapsed / total duration timestamps.
+ */
+@Composable
+fun SquigglyProgressBar(
+    positionMsProvider: () -> Long,
+    durationMs: Long,
+    isPlaying: Boolean,
+    accentColor: Color,
+    appColors: AppThemeColors,
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val safeDurationMs = durationMs.coerceAtLeast(0L)
-    val safePositionMs = currentPositionMs.coerceAtLeast(0L)
-    val playbackFraction = if (safeDurationMs > 0L) {
-        (safePositionMs.toFloat() / safeDurationMs.toFloat()).coerceIn(0f, 1f)
-    } else {
-        0f
-    }
+    val latestPositionProvider by rememberUpdatedState(positionMsProvider)
+    val latestSafeDurationMs by rememberUpdatedState(safeDurationMs)
 
     var isDragging by remember { mutableStateOf(false) }
-    var dragFraction by remember { mutableFloatStateOf(playbackFraction) }
+    var dragFraction by remember { mutableFloatStateOf(0f) }
     var pendingSeekFraction by remember { mutableStateOf<Float?>(null) }
 
     // Clear the optimistic seek anchor once playback catches up or after a short grace period.
-    LaunchedEffect(playbackFraction, pendingSeekFraction) {
+    // Only runs when a seek is actually pending (never relaunched on normal playback ticks).
+    LaunchedEffect(pendingSeekFraction) {
         val pending = pendingSeekFraction ?: return@LaunchedEffect
-        if (abs(playbackFraction - pending) < 0.025f) {
-            pendingSeekFraction = null
-        } else {
-            delay(400L)
-            pendingSeekFraction = null
+        withTimeoutOrNull(400L) {
+            snapshotFlow {
+                val dur = latestSafeDurationMs
+                if (dur > 0L) (latestPositionProvider().coerceAtLeast(0L).toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+                else 0f
+            }.first { frac -> abs(frac - pending) < 0.025f }
         }
-    }
-
-    val displayFraction = when {
-        isDragging -> dragFraction
-        pendingSeekFraction != null -> pendingSeekFraction!!
-        else -> playbackFraction
-    }.coerceIn(0f, 1f)
-
-    val displayedPositionMs = when {
-        isDragging -> (dragFraction * safeDurationMs).toLong()
-        pendingSeekFraction != null -> (pendingSeekFraction!! * safeDurationMs).toLong()
-        else -> safePositionMs
+        pendingSeekFraction = null
     }
 
     val shouldAnimateWave = isPlaying && !isDragging && safeDurationMs > 0L
-    val waveAmplitudeFraction by animateFloatAsState(
+    val waveAmplitudeState = animateFloatAsState(
         targetValue = if (shouldAnimateWave) 1f else 0f,
         animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
         label = "squigglyWaveAmplitude"
     )
 
-    val thumbScale by animateFloatAsState(
+    val thumbScaleState = animateFloatAsState(
         targetValue = if (isDragging) 1.32f else 1.0f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -183,15 +226,14 @@ fun SquigglyProgressBar(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Current position timestamp
-            Text(
-                text = formatTrackDuration(displayedPositionMs),
-                fontFamily = GoogleSans,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 12.sp,
-                color = appColors.glassTextPrimary.copy(alpha = 0.85f),
-                maxLines = 1,
-                modifier = Modifier.widthIn(min = 38.dp)
+            // Current position timestamp (recomposes at most 1 Hz when whole second changes)
+            SquigglyElapsedTimestamp(
+                positionMsProvider = latestPositionProvider,
+                durationMs = safeDurationMs,
+                isDragging = isDragging,
+                dragFractionProvider = { dragFraction },
+                pendingSeekFractionProvider = { pendingSeekFraction },
+                color = appColors.glassTextPrimary.copy(alpha = 0.85f)
             )
 
             Spacer(modifier = Modifier.width(8.dp))
@@ -252,6 +294,20 @@ fun SquigglyProgressBar(
                         .fillMaxWidth()
                         .height(34.dp)
                 ) {
+                    val safePos = latestPositionProvider().coerceAtLeast(0L)
+                    val playbackFraction = if (safeDurationMs > 0L) {
+                        (safePos.toFloat() / safeDurationMs.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
+                    val displayFraction = when {
+                        isDragging -> dragFraction
+                        pendingSeekFraction != null -> pendingSeekFraction!!
+                        else -> playbackFraction
+                    }.coerceIn(0f, 1f)
+                    val waveAmplitudeFraction = waveAmplitudeState.value
+                    val thumbScale = thumbScaleState.value
+
                     val trackY = size.height / 2f
                     val startX = trackInsetPx
                     val endX = (size.width - trackInsetPx).coerceAtLeast(startX + 1f)
@@ -376,6 +432,36 @@ fun SquigglyProgressBar(
             )
         }
     }
+}
+
+@Composable
+private fun SquigglyElapsedTimestamp(
+    positionMsProvider: () -> Long,
+    durationMs: Long,
+    isDragging: Boolean,
+    dragFractionProvider: () -> Float,
+    pendingSeekFractionProvider: () -> Float?,
+    color: Color
+) {
+    val displayedSeconds by remember(durationMs, isDragging) {
+        derivedStateOf {
+            val ms = when {
+                isDragging -> (dragFractionProvider() * durationMs).toLong()
+                pendingSeekFractionProvider() != null -> (pendingSeekFractionProvider()!! * durationMs).toLong()
+                else -> positionMsProvider().coerceAtLeast(0L)
+            }
+            (ms / 1000L).coerceAtLeast(0L)
+        }
+    }
+    Text(
+        text = formatTrackDuration(displayedSeconds * 1000L),
+        fontFamily = GoogleSans,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 12.sp,
+        color = color,
+        maxLines = 1,
+        modifier = Modifier.widthIn(min = 38.dp)
+    )
 }
 
 internal fun xToTrackFraction(x: Float, widthPx: Float, insetPx: Float): Float {

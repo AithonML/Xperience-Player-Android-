@@ -766,11 +766,20 @@ class CastSessionController internal constructor(
             }
         }
 
+        localPlaybackStateProvider = null
+        onCastSessionStarted = null
+        onCastSessionEnded = null
+
         localServer.stop()
         castInitExecutor?.shutdownNow()
         trackIdToCastItemId.clear()
         queuedTrackIds.clear()
         routeInfoById.clear()
+        synchronized(Companion) {
+            if (instance === this) {
+                instance = null
+            }
+        }
     }
 
     private fun attachSession(session: CastSession) {

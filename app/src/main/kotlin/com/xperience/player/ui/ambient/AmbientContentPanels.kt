@@ -58,6 +58,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -65,6 +66,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -103,6 +105,8 @@ import com.xperience.player.domain.model.PlaybackState
 import com.xperience.player.domain.model.TrackItem
 import com.xperience.player.domain.model.canvas.CanvasArtworkResult
 import com.xperience.player.domain.model.lyrics.LyricLine
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import com.xperience.player.service.MediaNetworkClients
 import com.xperience.player.ui.component.ExplicitBadge
 import com.xperience.player.ui.component.shapes.ContinuousRoundedRectangle
@@ -319,7 +323,8 @@ internal fun AmbientLyricsPanel(
     onSeekToPosition: (Long) -> Unit,
     onPlayQueueIndex: (Int) -> Unit,
     onOpenLyricsSettings: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    playbackPositionMsFlow: StateFlow<Long> = remember { MutableStateFlow(playbackState.currentPositionMs) }
 ) {
     if (lines.isEmpty()) {
         AmbientClockAndMetadataPanel(
@@ -341,28 +346,31 @@ internal fun AmbientLyricsPanel(
     val tokenizedLines = remember(lines) { LyricsTimingEngine.tokenizeLines(lines) }
     val listState = rememberLazyListState()
 
-    val latestPositionMs by rememberUpdatedState(playbackState.currentPositionMs)
+    val positionState = playbackPositionMsFlow.collectAsState()
     val latestIsPlaying by rememberUpdatedState(playbackState.isPlaying)
 
     val interpolator = remember { PlaybackPositionInterpolator() }
-    val smoothPositionState = remember { mutableLongStateOf(playbackState.currentPositionMs.coerceAtLeast(0L)) }
+    val smoothPositionState = remember { mutableLongStateOf(positionState.value.coerceAtLeast(0L)) }
     var hasAlignedInitially by remember(lines) { mutableStateOf(false) }
 
     LaunchedEffect(lines) {
-        interpolator.snap(latestPositionMs)
-        smoothPositionState.longValue = latestPositionMs.coerceAtLeast(0L)
+        val pos = positionState.value
+        interpolator.snap(pos)
+        smoothPositionState.longValue = pos.coerceAtLeast(0L)
         if (!isSynchronized) {
             listState.scrollToItem(0)
         }
     }
 
-    LaunchedEffect(playbackState.currentPositionMs, playbackState.isPlaying) {
-        if (!playbackState.isPlaying) {
-            interpolator.snap(playbackState.currentPositionMs)
-            smoothPositionState.longValue = playbackState.currentPositionMs.coerceAtLeast(0L)
-        } else if (abs(playbackState.currentPositionMs - smoothPositionState.longValue) > LyricsTimingEngine.SEEK_SNAP_THRESHOLD_MS) {
-            interpolator.snap(playbackState.currentPositionMs)
-            smoothPositionState.longValue = playbackState.currentPositionMs.coerceAtLeast(0L)
+    LaunchedEffect(playbackState.isPlaying) {
+        snapshotFlow { positionState.value }.collect { reportedPos ->
+            if (!latestIsPlaying) {
+                interpolator.snap(reportedPos)
+                smoothPositionState.longValue = reportedPos.coerceAtLeast(0L)
+            } else if (abs(reportedPos - smoothPositionState.longValue) > LyricsTimingEngine.SEEK_SNAP_THRESHOLD_MS) {
+                interpolator.snap(reportedPos)
+                smoothPositionState.longValue = reportedPos.coerceAtLeast(0L)
+            }
         }
     }
 
@@ -372,7 +380,7 @@ internal fun AmbientLyricsPanel(
                 withFrameNanos { frameNanos ->
                     val frameMs = frameNanos / 1_000_000L
                     smoothPositionState.longValue = interpolator.update(
-                        reportedPositionMs = latestPositionMs,
+                        reportedPositionMs = positionState.value,
                         isPlaying = latestIsPlaying,
                         frameTimeMs = frameMs
                     )

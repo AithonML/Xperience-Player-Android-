@@ -100,17 +100,46 @@ object WidgetUpdater {
     private const val PLAYLISTS_SLOT_COUNT_IN_PAYLOAD = 6
     private const val MUSIC_HUB_SLOT_COUNT_IN_PAYLOAD = 8
 
+    private const val ACTIVE_WIDGET_CACHE_TTL_MS = 30_000L
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile private var miniPlayerJob: Job? = null
     @Volatile private var playlistsJob: Job? = null
     @Volatile private var musicHubJob: Job? = null
 
+    private val activeWidgetsCacheLock = Any()
+    @Volatile private var cachedHasActiveWidgets: Boolean? = null
+    @Volatile private var cachedHasActiveWidgetsAtMs: Long = 0L
+
+    fun invalidateActiveWidgetsCache() {
+        synchronized(activeWidgetsCacheLock) {
+            cachedHasActiveWidgets = null
+            cachedHasActiveWidgetsAtMs = 0L
+        }
+    }
+
     fun hasAnyActiveWidgets(context: Context): Boolean {
-        val manager = AppWidgetManager.getInstance(context.applicationContext)
-        return getWidgetIds(context, manager, MiniPlayerWidgetProvider::class.java).isNotEmpty() ||
-            getWidgetIds(context, manager, PlaylistRecommendationsWidgetProvider::class.java).isNotEmpty() ||
-            getWidgetIds(context, manager, MusicHubWidgetProvider::class.java).isNotEmpty()
+        val now = android.os.SystemClock.elapsedRealtime()
+        val cached = cachedHasActiveWidgets
+        if (cached != null && now - cachedHasActiveWidgetsAtMs < ACTIVE_WIDGET_CACHE_TTL_MS) {
+            return cached
+        }
+        return synchronized(activeWidgetsCacheLock) {
+            val recheck = cachedHasActiveWidgets
+            val recheckNow = android.os.SystemClock.elapsedRealtime()
+            if (recheck != null && recheckNow - cachedHasActiveWidgetsAtMs < ACTIVE_WIDGET_CACHE_TTL_MS) {
+                return@synchronized recheck
+            }
+            val appContext = context.applicationContext
+            val manager = AppWidgetManager.getInstance(appContext)
+            val active = getWidgetIds(appContext, manager, MiniPlayerWidgetProvider::class.java).isNotEmpty() ||
+                getWidgetIds(appContext, manager, PlaylistRecommendationsWidgetProvider::class.java).isNotEmpty() ||
+                getWidgetIds(appContext, manager, MusicHubWidgetProvider::class.java).isNotEmpty()
+            cachedHasActiveWidgets = active
+            cachedHasActiveWidgetsAtMs = recheckNow
+            active
+        }
     }
 
     fun requestUpdatePlaybackWidgets(context: Context) {
