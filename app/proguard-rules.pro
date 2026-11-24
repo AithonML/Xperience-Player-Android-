@@ -38,3 +38,11 @@
 -keep class com.xperience.player.widget.**WidgetProvider { *; }
 -keep class com.xperience.player.widget.WidgetActionReceiver { *; }
 -keep class com.xperience.player.XperienceApplication { *; }
+
+# Strip verbose, debug, and info logs in release builds
+-assumenosideeffects class android.util.Log {
+    public static boolean isLoggable(java.lang.String, int);
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}

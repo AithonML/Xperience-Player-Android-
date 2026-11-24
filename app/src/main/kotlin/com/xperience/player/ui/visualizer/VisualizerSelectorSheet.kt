@@ -1,7 +1,9 @@
 package com.xperience.player.ui.visualizer
 
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
+import com.xperience.player.BuildConfig
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -78,7 +80,7 @@ fun VisualizerSelectorSheetContent(
                     Toast.makeText(context, "Empty visualizer file", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("VisualizerSelectorSheet", "Error importing visualizer JSON", e) }
                 Toast.makeText(context, "Failed to import visualizer: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
             }
         }
