@@ -140,9 +140,11 @@ import com.xperience.player.ui.library.LibrarySubView
 import com.xperience.player.ui.liked.LikedScreen
 import com.xperience.player.ui.playlists.AddToPlaylistSheet
 import com.xperience.player.ui.playlists.CreatePlaylistDialog
+import com.xperience.player.ui.playlists.ImportYouTubePlaylistsSheet
 import com.xperience.player.ui.playlists.PlaylistDetailScreen
 import com.xperience.player.ui.playlists.PlaylistsEmptyDetailPane
 import com.xperience.player.ui.playlists.PlaylistsScreen
+import com.xperience.player.ui.playlists.RemovePlaylistDialog
 import com.xperience.player.ui.components.TrackOptionsMenuSheet
 import com.xperience.player.ui.player.DownloadConfirmationModal
 import com.xperience.player.ui.player.NowPlayingScreen
@@ -217,6 +219,16 @@ fun HomeScreen(
     val isYtmLoginSheetOpen by viewModel.isYtmLoginSheetOpen.collectAsState()
     val isSyncingYtmAccount by viewModel.isSyncingYtmAccount.collectAsState()
     val ytmLoginError by viewModel.ytmLoginError.collectAsState()
+    val isYtmPlaylistImportOpen by viewModel.isYtmPlaylistImportOpen.collectAsState()
+    val isLoadingYtmLibraryPlaylists by viewModel.isLoadingYtmLibraryPlaylists.collectAsState()
+    val ytmLibraryPlaylists by viewModel.ytmLibraryPlaylists.collectAsState()
+    val selectedYtmPlaylistIds by viewModel.selectedYtmPlaylistIds.collectAsState()
+    val isImportingYtmPlaylists by viewModel.isImportingYtmPlaylists.collectAsState()
+    val ytmImportProgressText by viewModel.ytmImportProgressText.collectAsState()
+    val ytmImportError by viewModel.ytmImportError.collectAsState()
+    val ytmImportStatusMessage by viewModel.ytmImportStatusMessage.collectAsState()
+    val playlistPendingDelete by viewModel.playlistPendingDelete.collectAsState()
+    val isRefreshingImportedPlaylist by viewModel.isRefreshingImportedPlaylist.collectAsState()
     val homeGridCategory by viewModel.homeGridCategory.collectAsState()
     val isHomeGridOpen = homeGridCategory != null
     var lastHomeGridCategory by remember { mutableStateOf(homeGridCategory) }
@@ -943,6 +955,11 @@ fun HomeScreen(
                                                         viewModel.saveSuggestedPlaylistToLibrary(playlist)
                                                     },
                                                     onCreatePlaylistClick = { viewModel.openCreatePlaylistDialog() },
+                                                    isYtmSignedIn = ytmAccountState.isSignedIn,
+                                                    onImportYtmPlaylistsClick = { viewModel.openYtmPlaylistImport() },
+                                                    onRequestDeletePlaylist = { playlist -> viewModel.requestDeletePlaylist(playlist) },
+                                                    statusMessage = ytmImportStatusMessage,
+                                                    onDismissStatusMessage = { viewModel.dismissYtmImportStatusMessage() },
                                                     auroraColors = auroraColors,
                                                     applyStatusBarsPadding = true,
                                                     modifier = Modifier
@@ -981,7 +998,10 @@ fun HomeScreen(
                                                         onToggleFavorite = { track -> viewModel.toggleFavorite(track.id, fallback = track) },
                                                         onRemoveTrack = { track -> viewModel.removeTrackFromPlaylist(activeInlinePlaylist.id, track.id) },
                                                         onEditPlaylistClick = { viewModel.openCreatePlaylistDialog(activeInlinePlaylist) },
-                                                        onDeletePlaylistClick = { viewModel.deletePlaylist(activeInlinePlaylist.id) },
+                                                        onDeletePlaylistClick = { viewModel.requestDeletePlaylist(activeInlinePlaylist) },
+                                                        isYtmSignedIn = ytmAccountState.isSignedIn,
+                                                        isRefreshingImportedPlaylist = isRefreshingImportedPlaylist,
+                                                        onRefreshImportedPlaylistClick = { viewModel.refreshImportedPlaylist(activeInlinePlaylist) },
                                                         auroraColors = auroraColors,
                                                         onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) },
                                                         onTrackMoreClick = { track -> viewModel.openTrackOptions(track) },
@@ -1003,6 +1023,11 @@ fun HomeScreen(
                                         onPlayPlaylistClick = { playlist -> viewModel.playPlaylistTracks(playlist) },
                                         onSaveSuggestedPlaylist = { playlist -> viewModel.saveSuggestedPlaylistToLibrary(playlist) },
                                         onCreatePlaylistClick = { viewModel.openCreatePlaylistDialog() },
+                                        isYtmSignedIn = ytmAccountState.isSignedIn,
+                                        onImportYtmPlaylistsClick = { viewModel.openYtmPlaylistImport() },
+                                        onRequestDeletePlaylist = { playlist -> viewModel.requestDeletePlaylist(playlist) },
+                                        statusMessage = ytmImportStatusMessage,
+                                        onDismissStatusMessage = { viewModel.dismissYtmImportStatusMessage() },
                                         auroraColors = auroraColors,
                                         applyStatusBarsPadding = true,
                                         modifier = Modifier
@@ -1221,7 +1246,10 @@ fun HomeScreen(
                                 onToggleFavorite = { track -> viewModel.toggleFavorite(track.id, fallback = track) },
                                 onRemoveTrack = { track -> viewModel.removeTrackFromPlaylist(playlist.id, track.id) },
                                 onEditPlaylistClick = { viewModel.openCreatePlaylistDialog(playlist) },
-                                onDeletePlaylistClick = { viewModel.deletePlaylist(playlist.id) },
+                                onDeletePlaylistClick = { viewModel.requestDeletePlaylist(playlist) },
+                                isYtmSignedIn = ytmAccountState.isSignedIn,
+                                isRefreshingImportedPlaylist = isRefreshingImportedPlaylist,
+                                onRefreshImportedPlaylistClick = { viewModel.refreshImportedPlaylist(playlist) },
                                 auroraColors = auroraColors,
                                 onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) },
                                 onTrackMoreClick = { track -> viewModel.openTrackOptions(track) },
@@ -1814,6 +1842,10 @@ fun HomeScreen(
                 },
                 onSignOutYtmClick = { viewModel.signOutYtm() },
                 onForceSyncYtmClick = { viewModel.forceSyncYtm() },
+                onImportYtmPlaylistsClick = {
+                    viewModel.closeSettings()
+                    viewModel.openYtmPlaylistImport()
+                },
                 autoCheckUpdates = autoCheckUpdates,
                 onToggleAutoCheckUpdates = { enabled -> viewModel.setAutoCheckUpdates(enabled) },
                 updateUiState = updateUiState,
@@ -1843,6 +1875,31 @@ fun HomeScreen(
                 },
                 isValidating = isSyncingYtmAccount,
                 validationError = ytmLoginError
+            )
+
+            // Import YouTube Music Playlists Sheet
+            ImportYouTubePlaylistsSheet(
+                isOpen = isYtmPlaylistImportOpen,
+                isLoading = isLoadingYtmLibraryPlaylists,
+                libraryPlaylists = ytmLibraryPlaylists,
+                selectedIds = selectedYtmPlaylistIds,
+                existingLocalPlaylists = playlists,
+                isImporting = isImportingYtmPlaylists,
+                progressText = ytmImportProgressText,
+                errorMessage = ytmImportError,
+                onDismiss = { viewModel.closeYtmPlaylistImport() },
+                onRetry = { viewModel.loadYtmLibraryPlaylists() },
+                onToggleSelection = { id -> viewModel.toggleYtmPlaylistSelection(id) },
+                onSelectAll = { viewModel.selectAllYtmPlaylists() },
+                onClearSelection = { viewModel.clearYtmPlaylistSelection() },
+                onImportClick = { viewModel.importSelectedYtmPlaylists() }
+            )
+
+            // Local-Only Remove / Delete Playlist Confirmation Dialog
+            RemovePlaylistDialog(
+                playlist = playlistPendingDelete,
+                onDismiss = { viewModel.cancelDeletePlaylist() },
+                onConfirm = { viewModel.confirmDeletePlaylist() }
             )
 
             // Download Confirmation & Source Resolution Modal

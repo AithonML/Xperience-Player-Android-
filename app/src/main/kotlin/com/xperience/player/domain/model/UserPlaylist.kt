@@ -20,8 +20,23 @@ data class UserPlaylist(
     val tracks: List<TrackItem> = emptyList(),
     val isSmartSuggestion: Boolean = false,
     val suggestionBadge: String = "",
-    val categoryTag: String = ""
+    val categoryTag: String = "",
+    val source: String = "",
+    val externalPlaylistId: String = "",
+    val externalBrowseId: String = "",
+    val sourceAccountLabel: String = "",
+    val importedAt: String = ""
 ) {
+    companion object {
+        const val SOURCE_YOUTUBE_MUSIC = "youtube_music"
+    }
+
+    /**
+     * Whether this playlist was imported from YouTube Music.
+     */
+    val isFromYouTubeMusic: Boolean
+        get() = source.equals(SOURCE_YOUTUBE_MUSIC, ignoreCase = true) || externalPlaylistId.isNotBlank()
+
     /**
      * Whether a custom cover photo was selected by the user.
      */

@@ -12,6 +12,7 @@ import com.xperience.player.domain.model.RecommendedPlaylistItem
 import com.xperience.player.domain.model.TopPickItem
 import com.xperience.player.domain.model.TopPickKind
 import com.xperience.player.domain.model.TrackItem
+import com.xperience.player.domain.model.YouTubeMusicLibraryPlaylist
 import com.xperience.player.domain.model.YtmAccountState
 import com.xperience.player.domain.model.YtmMoodCategory
 import com.xperience.player.domain.model.YtmMoodCategoryDetail
@@ -5990,6 +5991,17 @@ class YouTubeMusicService(
         val twoColSecondary = json.optJSONObject("contents")
             ?.optJSONObject("twoColumnBrowseResultsRenderer")
             ?.optJSONObject("secondaryContents")
+        val playlistShelf = findFirstObjectForKey(twoColSecondary ?: json, "musicPlaylistShelfRenderer")
+        if (playlistShelf != null) {
+            extractTracksRecursive(
+                jsonObj = playlistShelf,
+                results = tracks,
+                seenIds = seenIds,
+                isPlaylistContext = true,
+                playlistFallbackCover = headerCover
+            )
+            return tracks
+        }
         if (twoColSecondary != null) {
             extractTracksRecursive(
                 jsonObj = twoColSecondary,
@@ -6009,6 +6021,429 @@ class YouTubeMusicService(
             )
         }
         return tracks
+    }
+
+    private fun findFirstObjectForKey(node: Any?, targetKey: String): JSONObject? {
+        when (node) {
+            is JSONObject -> {
+                node.optJSONObject(targetKey)?.let { return it }
+                val keys = node.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val found = findFirstObjectForKey(node.opt(key), targetKey)
+                    if (found != null) return found
+                }
+            }
+            is JSONArray -> {
+                for (i in 0 until node.length()) {
+                    val found = findFirstObjectForKey(node.opt(i), targetKey)
+                    if (found != null) return found
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Executes an authenticated InnerTube `/browse` request against the user's YouTube Music library.
+     * Requires an active signed-in session; if HTTP 400/403 occurs while delegated `onBehalfOfUser` /
+     * `X-Goog-PageId` was included, retries once without delegation (`includeUser = false, includePageId = false`).
+     * Never falls back to anonymous unauthenticated requests.
+     */
+    internal fun executeAuthenticatedLibraryBrowse(payload: JSONObject): JSONObject? {
+        val manager = authManager
+        if (manager == null || !manager.isSignedIn()) return null
+
+        val primary = executeInnerTubePostWithStatus(
+            url = browseUrl,
+            payload = payload,
+            includeAuthHeaders = true,
+            includePageId = true
+        )
+        if (primary.json != null) return primary.json
+
+        val hasDelegation = !manager.getOnBehalfOfUser().isNullOrBlank() ||
+            payload.optJSONObject("context")?.has("user") == true
+        if ((primary.httpCode == 400 || primary.httpCode == 403) && hasDelegation) {
+            val retryPayload = JSONObject(payload.toString()).apply {
+                put("context", buildWebRemixContextJson(includeUser = false))
+            }
+            val retry = executeInnerTubePostWithStatus(
+                url = browseUrl,
+                payload = retryPayload,
+                includeAuthHeaders = true,
+                includePageId = false
+            )
+            return retry.json
+        }
+        return null
+    }
+
+    /**
+     * Fetches the signed-in user's YouTube Music library playlists via `FEmusic_liked_playlists`,
+     * following continuations up to 8 pages with cycle detection.
+     */
+    suspend fun fetchUserLibraryPlaylists(): List<YouTubeMusicLibraryPlaylist> = withContext(Dispatchers.IO) {
+        if (authManager?.isSignedIn() != true) return@withContext emptyList()
+
+        val initialPayload = JSONObject().apply {
+            put("context", buildWebRemixContextJson(includeUser = true))
+            put("browseId", "FEmusic_liked_playlists")
+        }
+        var currentJson = executeAuthenticatedLibraryBrowse(initialPayload)
+            ?: return@withContext emptyList()
+
+        val allPlaylists = mutableListOf<YouTubeMusicLibraryPlaylist>()
+        val seenIds = mutableSetOf<String>()
+        val visitedTokens = mutableSetOf<String>()
+        var pageCount = 0
+
+        while (pageCount < 8) {
+            pageCount++
+            val (pageItems, nextToken) = parseUserLibraryPlaylistsResponse(currentJson)
+            for (item in pageItems) {
+                if (seenIds.add(item.playlistId.lowercase(Locale.ROOT))) {
+                    allPlaylists.add(item)
+                }
+            }
+            if (nextToken.isNullOrBlank() || !visitedTokens.add(nextToken)) {
+                break
+            }
+            val contPayload = JSONObject().apply {
+                put("context", buildWebRemixContextJson(includeUser = true))
+                put("continuation", nextToken)
+            }
+            currentJson = executeAuthenticatedLibraryBrowse(contPayload) ?: break
+        }
+        allPlaylists
+    }
+
+    /**
+     * Fetches all tracks for a user's YouTube Music playlist via authenticated `/browse`,
+     * following continuations up to 20 pages with cycle detection.
+     * Preserves OMV/video tracks and promotes ATV `MPTC` when available.
+     * Does NOT fall back to `searchCatalog` if the playlist is empty.
+     */
+    suspend fun fetchUserPlaylistTracks(playlist: YouTubeMusicLibraryPlaylist): List<TrackItem> = withContext(Dispatchers.IO) {
+        if (authManager?.isSignedIn() != true) return@withContext emptyList()
+
+        val rawBrowse = playlist.browseId.trim()
+        val cleanId = playlist.playlistId.trim().removePrefix("VL")
+        val normalizedBrowseId = when {
+            rawBrowse.startsWith("VL") -> rawBrowse
+            rawBrowse.isNotBlank() -> "VL$rawBrowse"
+            cleanId.isNotBlank() -> "VL$cleanId"
+            else -> return@withContext emptyList()
+        }
+
+        val initialPayload = JSONObject().apply {
+            put("context", buildWebRemixContextJson(includeUser = true))
+            put("browseId", normalizedBrowseId)
+        }
+        var currentJson = executeAuthenticatedLibraryBrowse(initialPayload)
+            ?: return@withContext emptyList()
+
+        val allTracks = mutableListOf<TrackItem>()
+        val seenTrackIds = mutableSetOf<String>()
+        val visitedTokens = mutableSetOf<String>()
+        var pageCount = 0
+
+        while (pageCount < 20) {
+            pageCount++
+            val pageTracks = parsePlaylistBrowseTracks(currentJson)
+            for (track in pageTracks) {
+                if (seenTrackIds.add(track.id)) {
+                    allTracks.add(track)
+                }
+            }
+            val nextToken = extractLibraryOrPlaylistContinuationToken(currentJson)
+            if (nextToken.isNullOrBlank() || !visitedTokens.add(nextToken)) {
+                break
+            }
+            val contPayload = JSONObject().apply {
+                put("context", buildWebRemixContextJson(includeUser = true))
+                put("continuation", nextToken)
+            }
+            currentJson = executeAuthenticatedLibraryBrowse(contPayload) ?: break
+        }
+        allTracks
+    }
+
+    /**
+     * Parses a YouTube Music `FEmusic_liked_playlists` (or continuation) JSON response into
+     * a deduplicated list of [YouTubeMusicLibraryPlaylist] entries plus an optional continuation token.
+     */
+    internal fun parseUserLibraryPlaylistsResponse(
+        json: JSONObject
+    ): Pair<List<YouTubeMusicLibraryPlaylist>, String?> {
+        val results = mutableListOf<YouTubeMusicLibraryPlaylist>()
+        val seenIds = mutableSetOf<String>()
+        collectUserLibraryPlaylistsRecursive(json, results, seenIds)
+        val nextToken = extractLibraryOrPlaylistContinuationToken(json)
+        return results to nextToken
+    }
+
+    private fun collectUserLibraryPlaylistsRecursive(
+        node: Any?,
+        results: MutableList<YouTubeMusicLibraryPlaylist>,
+        seenIds: MutableSet<String>
+    ) {
+        when (node) {
+            is JSONObject -> {
+                if (node.has("musicTwoRowItemRenderer")) {
+                    node.optJSONObject("musicTwoRowItemRenderer")?.let { renderer ->
+                        parseTwoRowLibraryPlaylist(renderer)?.let { item ->
+                            if (seenIds.add(item.playlistId.lowercase(Locale.ROOT))) {
+                                results.add(item)
+                            }
+                        }
+                    }
+                    return
+                }
+                if (node.has("musicResponsiveListItemRenderer")) {
+                    node.optJSONObject("musicResponsiveListItemRenderer")?.let { renderer ->
+                        parseResponsiveLibraryPlaylist(renderer)?.let { item ->
+                            if (seenIds.add(item.playlistId.lowercase(Locale.ROOT))) {
+                                results.add(item)
+                            }
+                        }
+                    }
+                    return
+                }
+                val keys = node.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    if (key == "chipCloudRenderer" || key == "header") continue
+                    collectUserLibraryPlaylistsRecursive(node.opt(key), results, seenIds)
+                }
+            }
+            is JSONArray -> {
+                for (i in 0 until node.length()) {
+                    collectUserLibraryPlaylistsRecursive(node.opt(i), results, seenIds)
+                }
+            }
+        }
+    }
+
+    private fun isCreatePlaylistActionEndpoint(endpoint: JSONObject?): Boolean {
+        if (endpoint == null) return false
+        return endpoint.has("createPlaylistServiceEndpoint") ||
+            endpoint.has("playlistEditorEndpoint") ||
+            endpoint.has("playlistEditEndpoint") ||
+            endpoint.has("modalWithTitleAndButtonRenderer")
+    }
+
+    private fun resolveLibraryPlaylistIds(
+        primaryNav: JSONObject?,
+        titleNav: JSONObject?,
+        overlayPlayNav: JSONObject?
+    ): Pair<String, String>? {
+        if (isCreatePlaylistActionEndpoint(primaryNav) || isCreatePlaylistActionEndpoint(titleNav)) {
+            return null
+        }
+
+        val browseEndpoint = primaryNav?.optJSONObject("browseEndpoint")
+            ?: titleNav?.optJSONObject("browseEndpoint")
+        val rawBrowseId = browseEndpoint?.optString("browseId").orEmpty().trim()
+        val pageType = extractBrowsePageType(primaryNav).ifBlank { extractBrowsePageType(titleNav) }
+
+        if (isPodcastOrEpisodesPlaylist(rawBrowseId, pageType)) {
+            return null
+        }
+
+        val watchPlaylistId = primaryNav?.optJSONObject("watchPlaylistEndpoint")?.optString("playlistId").orEmpty().trim()
+            .ifBlank { titleNav?.optJSONObject("watchPlaylistEndpoint")?.optString("playlistId").orEmpty().trim() }
+            .ifBlank { overlayPlayNav?.optJSONObject("watchPlaylistEndpoint")?.optString("playlistId").orEmpty().trim() }
+
+        if (rawBrowseId.isNotBlank()) {
+            val isAcceptedBrowse = rawBrowseId.equals("VLLM", ignoreCase = true) ||
+                rawBrowseId.startsWith("VL") ||
+                pageType.equals("MUSIC_PAGE_TYPE_PLAYLIST", ignoreCase = true)
+            if (!isAcceptedBrowse) return null
+            val normalizedId = if (rawBrowseId.startsWith("VL") && rawBrowseId.length > 2) {
+                rawBrowseId.removePrefix("VL")
+            } else {
+                rawBrowseId
+            }
+            if (normalizedId.isBlank() || normalizedId.equals("SE", ignoreCase = true)) return null
+            val normalizedBrowse = if (rawBrowseId.startsWith("VL")) rawBrowseId else "VL$normalizedId"
+            return normalizedId to normalizedBrowse
+        }
+
+        if (watchPlaylistId.isNotBlank()) {
+            val normalizedId = if (watchPlaylistId.startsWith("VL") && watchPlaylistId.length > 2) {
+                watchPlaylistId.removePrefix("VL")
+            } else {
+                watchPlaylistId
+            }
+            if (normalizedId.isBlank() || normalizedId.equals("SE", ignoreCase = true)) return null
+            return normalizedId to "VL$normalizedId"
+        }
+
+        return null
+    }
+
+    private fun isPodcastOrEpisodesPlaylist(browseId: String, pageType: String): Boolean {
+        return browseId.equals("VLSE", ignoreCase = true) ||
+            browseId.equals("SE", ignoreCase = true) ||
+            pageType.equals("MUSIC_PAGE_TYPE_PODCAST_SHOW_DETAIL_PAGE", ignoreCase = true) ||
+            pageType.equals("MUSIC_PAGE_TYPE_PODCAST_SHOW", ignoreCase = true) ||
+            pageType.equals("MUSIC_PAGE_TYPE_PODCAST_EPISODE_DETAIL_PAGE", ignoreCase = true)
+    }
+
+    private fun parseTwoRowLibraryPlaylist(twoRow: JSONObject): YouTubeMusicLibraryPlaylist? {
+        val titleObj = twoRow.optJSONObject("title")
+        val title = extractAllRunsText(titleObj).trim()
+        if (title.isBlank()) return null
+
+        val navEp = twoRow.optJSONObject("navigationEndpoint")
+        val titleRunNav = titleObj?.optJSONArray("runs")?.optJSONObject(0)?.optJSONObject("navigationEndpoint")
+        val overlayPlayNav = twoRow.optJSONObject("thumbnailOverlay")
+            ?.optJSONObject("musicItemThumbnailOverlayRenderer")
+            ?.optJSONObject("content")
+            ?.optJSONObject("musicPlayButtonRenderer")
+            ?.optJSONObject("playNavigationEndpoint")
+
+        val (playlistId, browseId) = resolveLibraryPlaylistIds(navEp, titleRunNav, overlayPlayNav)
+            ?: return null
+
+        val subtitle = extractAllRunsText(twoRow.optJSONObject("subtitle")).trim()
+        val artworkUri = extractThumbUrlFromObject(
+            twoRow.optJSONObject("thumbnailRenderer")
+                ?.optJSONObject("musicThumbnailRenderer")
+                ?.optJSONObject("thumbnail")
+        ) ?: extractHighResAvatarFromRenderer(twoRow).orEmpty()
+
+        return YouTubeMusicLibraryPlaylist(
+            playlistId = playlistId,
+            browseId = browseId,
+            title = title,
+            subtitle = subtitle,
+            artworkUri = artworkUri,
+            author = extractPlaylistAuthor(subtitle).orEmpty(),
+            trackCountText = extractTrackCount(subtitle).orEmpty()
+        )
+    }
+
+    private fun parseResponsiveLibraryPlaylist(renderer: JSONObject): YouTubeMusicLibraryPlaylist? {
+        val flexColumns = renderer.optJSONArray("flexColumns") ?: return null
+        val col0Text = flexColumns.optJSONObject(0)
+            ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+            ?.optJSONObject("text")
+        val col1Text = flexColumns.optJSONObject(1)
+            ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+            ?.optJSONObject("text")
+
+        val title = extractAllRunsText(col0Text).trim()
+        if (title.isBlank()) return null
+
+        val navEp = renderer.optJSONObject("navigationEndpoint")
+        val titleRunNav = col0Text?.optJSONArray("runs")?.optJSONObject(0)?.optJSONObject("navigationEndpoint")
+        val overlayPlayNav = renderer.optJSONObject("overlay")
+            ?.optJSONObject("musicItemThumbnailOverlayRenderer")
+            ?.optJSONObject("content")
+            ?.optJSONObject("musicPlayButtonRenderer")
+            ?.optJSONObject("playNavigationEndpoint")
+
+        val (playlistId, browseId) = resolveLibraryPlaylistIds(navEp, titleRunNav, overlayPlayNav)
+            ?: return null
+
+        val subtitle = extractAllRunsText(col1Text).trim()
+        val artworkUri = extractThumbUrlFromObject(
+            renderer.optJSONObject("thumbnail")
+                ?.optJSONObject("musicThumbnailRenderer")
+                ?.optJSONObject("thumbnail")
+        ) ?: extractHighResAvatarFromRenderer(renderer).orEmpty()
+
+        return YouTubeMusicLibraryPlaylist(
+            playlistId = playlistId,
+            browseId = browseId,
+            title = title,
+            subtitle = subtitle,
+            artworkUri = artworkUri,
+            author = extractPlaylistAuthor(subtitle).orEmpty(),
+            trackCountText = extractTrackCount(subtitle).orEmpty()
+        )
+    }
+
+    /**
+     * Extracts the next pagination continuation token across YouTube Music library and playlist
+     * response shapes (`musicPlaylistShelfRenderer`, `musicShelfContinuation`, `gridRenderer`,
+     * `gridContinuation`, `sectionListRenderer`, `sectionListContinuation`, and
+     * `continuationItemRenderer.continuationEndpoint.continuationCommand.token`).
+     * Ignores `reloadContinuationData` (used by filter chips).
+     */
+    internal fun extractLibraryOrPlaylistContinuationToken(json: JSONObject): String? {
+        fun fromContinuationsArray(arr: JSONArray?): String? {
+            if (arr == null) return null
+            for (i in 0 until arr.length()) {
+                val entry = arr.optJSONObject(i) ?: continue
+                val token = entry.optJSONObject("nextContinuationData")
+                    ?.optString("continuation")
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: entry.optJSONObject("nextRadioContinuationData")
+                        ?.optString("continuation")
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                if (token != null) return token
+            }
+            return null
+        }
+
+        fun fromContinuationItem(obj: JSONObject?): String? {
+            return obj?.optJSONObject("continuationEndpoint")
+                ?.optJSONObject("continuationCommand")
+                ?.optString("token")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+        }
+
+        fun searchRecursive(node: Any?): String? {
+            when (node) {
+                is JSONObject -> {
+                    node.optJSONObject("continuationItemRenderer")?.let { item ->
+                        fromContinuationItem(item)?.let { return it }
+                    }
+                    fromContinuationsArray(node.optJSONArray("continuations"))?.let { return it }
+
+                    val priorityKeys = listOf(
+                        "musicPlaylistShelfRenderer",
+                        "musicShelfContinuation",
+                        "gridContinuation",
+                        "musicShelfRenderer",
+                        "gridRenderer",
+                        "sectionListContinuation",
+                        "sectionListRenderer",
+                        "onResponseReceivedActions",
+                        "appendContinuationItemsAction",
+                        "continuationItems",
+                        "continuationContents",
+                        "contents",
+                        "twoColumnBrowseResultsRenderer",
+                        "secondaryContents",
+                        "singleColumnBrowseResultsRenderer",
+                        "tabs",
+                        "tabRenderer",
+                        "content",
+                        "items"
+                    )
+                    for (key in priorityKeys) {
+                        if (node.has(key)) {
+                            searchRecursive(node.opt(key))?.let { return it }
+                        }
+                    }
+                }
+                is JSONArray -> {
+                    for (i in 0 until node.length()) {
+                        searchRecursive(node.opt(i))?.let { return it }
+                    }
+                }
+            }
+            return null
+        }
+
+        return searchRecursive(json)
     }
 
     private fun extractBrowseSections(json: JSONObject): List<JSONObject> {
@@ -6542,9 +6977,12 @@ class YouTubeMusicService(
         val parts = subtitle.split("•").map { it.trim() }.filter { it.isNotBlank() }
         return parts.firstOrNull { part ->
             !part.equals("Playlist", ignoreCase = true) &&
+                !part.equals("Auto playlist", ignoreCase = true) &&
+                !part.equals("Lista de reproducción", ignoreCase = true) &&
                 !part.contains("song", ignoreCase = true) &&
                 !part.contains("track", ignoreCase = true) &&
-                !part.contains("cancion", ignoreCase = true)
+                !part.contains("cancion", ignoreCase = true) &&
+                !part.contains("canción", ignoreCase = true)
         }
     }
 
@@ -6553,7 +6991,8 @@ class YouTubeMusicService(
         return subtitle.split("•").map { it.trim() }.firstOrNull { part ->
             part.contains("song", ignoreCase = true) ||
                 part.contains("track", ignoreCase = true) ||
-                part.contains("cancion", ignoreCase = true)
+                part.contains("cancion", ignoreCase = true) ||
+                part.contains("canción", ignoreCase = true)
         }
     }
 }
