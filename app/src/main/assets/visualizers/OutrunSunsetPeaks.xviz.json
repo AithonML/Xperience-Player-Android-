@@ -1,0 +1,25 @@
+{
+  "Id": "OutrunSunsetPeaks",
+  "Name": "Outrun Sunset 1984",
+  "Author": "Custom Creator",
+  "Description": "Terreno 3D de alta energía con paleta Synthwave cálida y cian.",
+  "RenderMode": "NeonTerrainPeaks",
+  "UseDynamicCoverAccent": false,
+  "ColorPaletteHex": [
+    "#FFFFBE0B",
+    "#FFFF007F",
+    "#FF9D4EDD",
+    "#FF00F5D4",
+    "#FF00BBF9"
+  ],
+  "Sensitivity": 1.65,
+  "Speed": 1.35,
+  "GridResolution": 68,
+  "WaveLayers": 9,
+  "ParticleCount": 88,
+  "BassDeformation": 1.65,
+  "MidDeformation": 1.25,
+  "TrebleDeformation": 1.40,
+  "BloomRadius": 18.0,
+  "BackgroundDimOpacity": 0.76
+}

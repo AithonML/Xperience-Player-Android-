@@ -1,0 +1,96 @@
+<resources>
+    <string name="playback_channel_name">Reproducción de audio</string>
+    <string name="playback_channel_description">Controles multimedia en tiempo real y SystemUI</string>
+    <string name="custom_action_shuffle">Aleatorio</string>
+    <string name="custom_action_repeat">Repetir</string>
+    <string name="output_switcher_title">Salida de audio</string>
+
+    <!-- Sección y diálogo de actualizaciones -->
+    <string name="update_section_title">Actualizaciones</string>
+    <string name="update_section_description">Mantén Xperience Player al día con versiones verificadas desde GitHub.</string>
+    <string name="update_current_version_label">Versión instalada</string>
+    <string name="update_auto_check_title">Buscar actualizaciones automáticamente al iniciar</string>
+    <string name="update_auto_check_subtitle">Comprueba en segundo plano al abrir la aplicación.</string>
+    <string name="update_check_now_button">Buscar actualizaciones ahora</string>
+    <string name="update_checking">Buscando actualizaciones…</string>
+    <string name="update_up_to_date">Ya tienes la última versión (%1$s).</string>
+    <string name="update_no_releases">Aún no hay versiones publicadas disponibles.</string>
+    <string name="update_error_network">No se pudieron buscar actualizaciones. Revisa tu conexión a internet.</string>
+    <string name="update_error_no_apk">Esta versión no incluye un instalador APK compatible para Android.</string>
+    <string name="update_error_invalid_url">Error de seguridad: la URL de descarga debe usar HTTPS.</string>
+    <string name="update_error_missing_checksum">Error de seguridad: no se encontró un hash SHA-256 válido para esta versión. Instalación cancelada.</string>
+    <string name="update_error_integrity">Error de seguridad: el archivo APK descargado no superó la verificación SHA-256 y fue eliminado.</string>
+    <string name="update_error_installer_launch">No se pudo abrir el instalador de paquetes de Android.</string>
+    <string name="update_error_generic">Error al actualizar: %1$s</string>
+
+    <string name="update_dialog_title">Actualización disponible</string>
+    <string name="update_dialog_version_transition">%1$s → %2$s</string>
+    <string name="update_dialog_release_notes">Notas de la versión</string>
+    <string name="update_dialog_no_notes">No se proporcionaron notas para esta versión.</string>
+    <string name="update_dialog_update_now">Actualizar ahora</string>
+    <string name="update_dialog_later">Más tarde</string>
+    <string name="update_dialog_cancel">Cancelar</string>
+    <string name="update_dialog_retry">Reintentar</string>
+    <string name="update_dialog_open_settings">Permitir e instalar</string>
+    <string name="update_dialog_install_now">Instalar ahora</string>
+    <string name="update_dialog_close">Cerrar</string>
+
+    <string name="update_status_downloading">Descargando actualización… %1$d%%</string>
+    <string name="update_status_downloading_indeterminate">Descargando actualización…</string>
+    <string name="update_status_verifying">Verificando integridad SHA-256…</string>
+    <string name="update_status_verified">Integridad verificada. Abriendo el instalador…</string>
+    <string name="update_status_permission_needed">Permite instalar aplicaciones desde Xperience Player en los ajustes de Android para continuar.</string>
+
+    <!-- Modo Ambiente -->
+    <string name="ambient_mode">Modo Ambiente</string>
+    <string name="ambient_mode_subtitle">Reproductor horizontal a pantalla completa</string>
+
+    <!-- Chromecast -->
+    <string name="cast_title">Transmitir y salida de audio</string>
+    <string name="cast_casting_to">Transmitiendo a %1$s</string>
+    <string name="cast_stop">Detener transmisión</string>
+    <string name="cast_play_on_phone">Reproducir en este teléfono</string>
+
+    <!-- Establecer como tono -->
+    <string name="set_as_ringtone">Establecer como tono</string>
+    <string name="set_as_ringtone_subtitle">Recorta un fragmento para llamada, notificación o alarma</string>
+
+    <!-- Widgets de pantalla de inicio -->
+    <string name="widget_mini_player_label">Mini reproductor</string>
+    <string name="widget_mini_player_description">Controla tu música con carátula, progreso y favoritos.</string>
+    <string name="widget_playlists_label">Playlists recomendadas</string>
+    <string name="widget_playlists_description">Abre y reproduce tus mixes, playlists y estaciones al instante.</string>
+    <string name="widget_music_hub_label">Centro musical</string>
+    <string name="widget_music_hub_description">Mini reproductor combinado con tus playlists recomendadas.</string>
+    <string name="widget_idle_title">Xperience Music</string>
+    <string name="widget_idle_subtitle">Toca para reproducir</string>
+    <string name="widget_now_playing_eyebrow">REPRODUCIENDO</string>
+    <string name="widget_paused_eyebrow">EN PAUSA</string>
+    <string name="widget_ambient_label">Ambiente</string>
+    <string name="widget_playlists_header">Recomendado para ti</string>
+    <string name="widget_playlists_empty_title">Tus mixes te esperan</string>
+    <string name="widget_playlists_empty_subtitle">Abre Xperience para cargar tus playlists personalizadas</string>
+    <string name="widget_cd_album_art">Carátula del álbum</string>
+    <string name="widget_cd_play_pause">Reproducir o pausar</string>
+    <string name="widget_cd_previous">Canción anterior</string>
+    <string name="widget_cd_next">Siguiente canción</string>
+    <string name="widget_cd_favorite">Añadir o quitar de favoritos</string>
+    <string name="widget_cd_ambient">Abrir modo ambiente</string>
+    <string name="widget_cd_refresh">Actualizar recomendaciones</string>
+    <string name="widget_cd_playlist_art">Portada de playlist</string>
+    <string name="widget_badge_user_playlist">Playlist</string>
+    <string name="widget_badge_smart_mix">Mix inteligente</string>
+    <string name="widget_badge_made_for_you">Para ti</string>
+    <string name="widget_badge_radio">Mix rápido</string>
+    <string name="widget_badge_liked">Favoritas</string>
+    <string name="widget_badge_recent">Recientes</string>
+    <string name="widget_liked_songs_title">Canciones favoritas</string>
+    <string name="widget_recent_mix_title">Escuchado recientemente</string>
+    <string name="widget_preview_mix_1">Mix diario</string>
+    <string name="widget_preview_mix_2">Canciones favoritas</string>
+    <string name="widget_preview_mix_3">Noche tranquila</string>
+    <string name="widget_preview_mix_4">Radio rápida</string>
+    <string name="widget_preview_tracks_count">24 canciones</string>
+    <string name="widget_track_count_singular">1 canción</string>
+    <string name="widget_track_count_plural">%1$d canciones</string>
+</resources>
