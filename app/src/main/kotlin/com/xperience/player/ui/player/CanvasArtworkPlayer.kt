@@ -50,6 +50,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import com.xperience.player.service.MediaNetworkClients
+import com.xperience.player.service.YouTubeSecurityPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Call
@@ -140,10 +141,16 @@ fun CanvasArtworkPlayer(
                     if (extraHeaders.isEmpty()) {
                         MediaNetworkClients.sharedOkHttpClient.newCall(request)
                     } else {
+                        val allowSensitiveHeaders = request.url.isHttps &&
+                            YouTubeSecurityPolicy.isAllowedYouTubeStreamHost(request.url.host)
                         val builder = request.newBuilder()
                         extraHeaders.forEach { (key, value) ->
                             if (key.isNotBlank() && value.isNotBlank()) {
-                                builder.header(key, value)
+                                val isSensitive = key.equals("Cookie", ignoreCase = true) ||
+                                    key.equals("Authorization", ignoreCase = true)
+                                if (!isSensitive || allowSensitiveHeaders) {
+                                    builder.header(key, value)
+                                }
                             }
                         }
                         MediaNetworkClients.sharedOkHttpClient.newCall(builder.build())

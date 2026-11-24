@@ -269,6 +269,13 @@ sealed interface WidgetDeepLink {
             )
         }
 
+        private val SAFE_YTM_ID_REGEX = Regex("^[A-Za-z0-9_-]{2,128}$")
+
+        private fun validateYtmId(raw: String?): String? {
+            val trimmed = raw?.trim()?.ifBlank { null } ?: return null
+            return trimmed.takeIf { SAFE_YTM_ID_REGEX.matches(it) }
+        }
+
         /**
          * Pure JVM-testable parser backing [parse].
          */
@@ -300,7 +307,9 @@ sealed interface WidgetDeepLink {
                 TYPE_REFRESH -> RefreshRecommendations
                 TYPE_OPEN_PLAYLIST -> {
                     val cleanId = playlistId?.trim().orEmpty()
-                    val cleanYtmId = ytmPlaylistId?.trim()?.ifBlank { null }
+                    val cleanYtmId = validateYtmId(ytmPlaylistId)
+                    val cleanBrowseId = validateYtmId(browseId)
+                    val cleanSeedVideoId = validateYtmId(seedVideoId)
                     val effectiveId = cleanId.ifBlank { cleanYtmId.orEmpty() }
                     if (effectiveId.isBlank()) return OpenHome
                     OpenPlaylist(
@@ -308,8 +317,8 @@ sealed interface WidgetDeepLink {
                         title = playlistTitle?.trim().orEmpty(),
                         sourceType = WidgetPlaylistSourceType.fromWireValue(sourceTypeRaw),
                         ytmPlaylistId = cleanYtmId,
-                        browseId = browseId?.trim()?.ifBlank { null },
-                        seedVideoId = seedVideoId?.trim()?.ifBlank { null },
+                        browseId = cleanBrowseId,
+                        seedVideoId = cleanSeedVideoId,
                         params = params?.trim()?.ifBlank { null },
                         autoPlay = autoPlay
                     )
