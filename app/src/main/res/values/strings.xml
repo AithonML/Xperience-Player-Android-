@@ -1,0 +1,98 @@
+<resources>
+    <string name="app_name" translatable="false">Xperience Player</string>
+    <string name="playback_channel_name">Audio Playback</string>
+    <string name="playback_channel_description">Real-time media controls and SystemUI</string>
+    <string name="custom_action_shuffle">Shuffle</string>
+    <string name="custom_action_repeat">Repeat</string>
+    <string name="output_switcher_title">Audio Output</string>
+
+    <!-- Auto-Update Section & Dialog -->
+    <string name="update_section_title">Updates</string>
+    <string name="update_section_description">Keep Xperience Player up to date with verified releases from GitHub.</string>
+    <string name="update_current_version_label">Installed version</string>
+    <string name="update_auto_check_title">Check for updates automatically on startup</string>
+    <string name="update_auto_check_subtitle">Checks silently in the background when opening the app.</string>
+    <string name="update_check_now_button">Check for updates now</string>
+    <string name="update_checking">Checking for updates…</string>
+    <string name="update_up_to_date">You are already on the latest version (%1$s).</string>
+    <string name="update_no_releases">No published releases are available yet.</string>
+    <string name="update_error_network">Could not check for updates. Verify your internet connection.</string>
+    <string name="update_error_no_apk">This release does not include a compatible Android APK installer.</string>
+    <string name="update_error_invalid_url">Security error: update download URL must use HTTPS.</string>
+    <string name="update_error_missing_checksum">Security error: no valid SHA-256 checksum was found for this release. Installation aborted.</string>
+    <string name="update_error_integrity">Security error: the downloaded APK failed SHA-256 verification and was deleted.</string>
+    <string name="update_error_installer_launch">Could not open the Android package installer.</string>
+    <string name="update_error_generic">Update failed: %1$s</string>
+
+    <string name="update_dialog_title">Update Available</string>
+    <string name="update_dialog_version_transition">%1$s → %2$s</string>
+    <string name="update_dialog_release_notes">Release Notes</string>
+    <string name="update_dialog_no_notes">No release notes were provided for this version.</string>
+    <string name="update_dialog_update_now">Update now</string>
+    <string name="update_dialog_later">Later</string>
+    <string name="update_dialog_cancel">Cancel</string>
+    <string name="update_dialog_retry">Retry</string>
+    <string name="update_dialog_open_settings">Allow &amp; Install</string>
+    <string name="update_dialog_install_now">Install now</string>
+    <string name="update_dialog_close">Close</string>
+
+    <string name="update_status_downloading">Downloading update… %1$d%%</string>
+    <string name="update_status_downloading_indeterminate">Downloading update…</string>
+    <string name="update_status_verifying">Verifying SHA-256 integrity…</string>
+    <string name="update_status_verified">Verified. Opening Android installer…</string>
+    <string name="update_status_permission_needed">Allow installing apps from Xperience Player in Android Settings to finish updating.</string>
+
+    <!-- Ambient Mode -->
+    <string name="ambient_mode">Ambient Mode</string>
+    <string name="ambient_mode_subtitle">Full-screen horizontal cinema player</string>
+
+    <!-- Chromecast -->
+    <string name="cast_title">Cast &amp; Audio Output</string>
+    <string name="cast_casting_to">Casting to %1$s</string>
+    <string name="cast_stop">Stop casting</string>
+    <string name="cast_play_on_phone">Play on this phone</string>
+
+    <!-- Set as Ringtone -->
+    <string name="set_as_ringtone">Set as Ringtone</string>
+    <string name="set_as_ringtone_subtitle">Trim a song clip for ringtone, notification, or alarm</string>
+
+    <!-- Home Screen Widgets -->
+    <string name="widget_mini_player_label">Mini Player</string>
+    <string name="widget_mini_player_description">Control playback with album art, progress, and favorites.</string>
+    <string name="widget_playlists_label">Recommended Playlists</string>
+    <string name="widget_playlists_description">Jump straight into your mixes, playlists, and radio stations.</string>
+    <string name="widget_music_hub_label">Music Hub</string>
+    <string name="widget_music_hub_description">Now-playing controls paired with recommended playlists.</string>
+    <string name="widget_idle_title">Xperience Music</string>
+    <string name="widget_idle_subtitle">Tap to play music</string>
+    <string name="widget_now_playing_eyebrow">NOW PLAYING</string>
+    <string name="widget_paused_eyebrow">PAUSED</string>
+    <string name="widget_ambient_label">Ambient</string>
+    <string name="widget_playlists_header">Recommended for you</string>
+    <string name="widget_playlists_empty_title">Your mixes await</string>
+    <string name="widget_playlists_empty_subtitle">Open Xperience to load personalized playlists</string>
+    <string name="widget_cd_album_art">Album artwork</string>
+    <string name="widget_cd_play_pause">Play or pause</string>
+    <string name="widget_cd_previous">Previous track</string>
+    <string name="widget_cd_next">Next track</string>
+    <string name="widget_cd_favorite">Toggle favorite</string>
+    <string name="widget_cd_ambient">Open Ambient Mode</string>
+    <string name="widget_cd_refresh">Refresh recommendations</string>
+    <string name="widget_cd_playlist_art">Playlist artwork</string>
+    <string name="widget_badge_user_playlist">Playlist</string>
+    <string name="widget_badge_smart_mix">Smart Mix</string>
+    <string name="widget_badge_made_for_you">For You</string>
+    <string name="widget_badge_radio">Quick Mix</string>
+    <string name="widget_badge_liked">Liked</string>
+    <string name="widget_badge_recent">Recent</string>
+    <string name="widget_liked_songs_title">Liked Songs</string>
+    <string name="widget_recent_mix_title">Recently Played</string>
+    <string name="widget_preview_mix_1">Daily Mix</string>
+    <string name="widget_preview_mix_2">Liked Songs</string>
+    <string name="widget_preview_mix_3">Late Night Vibes</string>
+    <string name="widget_preview_mix_4">Quick Radio</string>
+    <string name="widget_preview_tracks_count">24 songs</string>
+    <string name="widget_track_count_singular">1 song</string>
+    <string name="widget_track_count_plural">%1$d songs</string>
+    <string name="widget_time_zero" translatable="false">0:00</string>
+</resources>

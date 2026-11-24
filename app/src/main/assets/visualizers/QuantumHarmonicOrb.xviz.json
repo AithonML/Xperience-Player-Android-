@@ -1,0 +1,24 @@
+{
+  "Id": "QuantumHarmonicOrb",
+  "Name": "Quantum Cover-Synced Orb",
+  "Author": "Custom Creator",
+  "Description": "Esfera armónica 3D sincronizada con el color dominante de la portada del álbum.",
+  "RenderMode": "HarmonicWireframeSphere",
+  "UseDynamicCoverAccent": true,
+  "ColorPaletteHex": [
+    "#FF2DD4BF",
+    "#FF38BDF8",
+    "#FFA855F7",
+    "#FFF43F5E"
+  ],
+  "Sensitivity": 1.70,
+  "Speed": 1.40,
+  "GridResolution": 64,
+  "WaveLayers": 10,
+  "ParticleCount": 96,
+  "BassDeformation": 1.70,
+  "MidDeformation": 1.35,
+  "TrebleDeformation": 1.45,
+  "BloomRadius": 16.0,
+  "BackgroundDimOpacity": 0.80
+}
