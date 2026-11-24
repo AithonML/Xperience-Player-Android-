@@ -86,7 +86,8 @@ fun TopPicksSection(
         ) {
             itemsIndexed(
                 items = items,
-                key = { index, item -> "top_pick_${item.kind.name}_${item.id}_$index" }
+                key = { index, item -> "top_pick_${item.kind.name}_${item.id}_$index" },
+                contentType = { _, item -> item.kind.name }
             ) { index, item ->
                 TopPickEditorialCard(
                     item = item,

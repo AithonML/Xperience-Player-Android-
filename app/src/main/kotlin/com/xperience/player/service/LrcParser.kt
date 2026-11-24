@@ -14,6 +14,7 @@ object LrcParser {
     private val LRC_TIMESTAMP_REGEX = Pattern.compile("\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?\\]")
     private val INLINE_WORD_TIMESTAMP_REGEX = Pattern.compile("<(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?>")
     private val LRC_METADATA_REGEX = Pattern.compile("^\\[(ar|ti|al|au|by|length|re|ve|tool|id|offset):.*?\\]$", Pattern.CASE_INSENSITIVE)
+    private val LINE_SPLIT_REGEX = Regex("[\r\n]+")
 
     /**
      * Parses raw LRC text or plain text into a list of [LyricLine]s.
@@ -21,7 +22,7 @@ object LrcParser {
     fun parse(rawText: String, totalDurationMs: Long = 0L): List<LyricLine> {
         if (rawText.isBlank()) return emptyList()
 
-        val rawLines = rawText.split(Regex("[\r\n]+")).map { it.trim() }.filter { it.isNotEmpty() }
+        val rawLines = rawText.split(LINE_SPLIT_REGEX).map { it.trim() }.filter { it.isNotEmpty() }
         val timedLines = mutableListOf<LyricLine>()
         var foundAnyTimestamp = false
 

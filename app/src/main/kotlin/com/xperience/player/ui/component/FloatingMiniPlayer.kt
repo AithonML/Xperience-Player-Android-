@@ -93,6 +93,7 @@ fun FloatingMiniPlayer(
     isDesktopBar: Boolean = false,
     onLyricsClick: (() -> Unit)? = null,
     onQueueClick: (() -> Unit)? = null,
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long>? = null,
 ) {
     val track = playbackState.currentTrack ?: return
     val isPlaying = playbackState.isPlaying
@@ -132,6 +133,7 @@ fun FloatingMiniPlayer(
     val perimeterState = rememberPillPerimeterState(
         playbackState = playbackState,
         onSeek = onSeek,
+        playbackPositionMsFlow = playbackPositionMsFlow,
     )
 
     var measuredHeightPx by remember { mutableIntStateOf(0) }

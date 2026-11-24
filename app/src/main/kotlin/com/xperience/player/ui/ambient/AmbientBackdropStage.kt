@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -53,8 +54,8 @@ private val AmbientBaseFallback = Color(0xFF0A0C12)
 /**
  * Full-bleed widescreen atmospheric backdrop for Ambient Mode:
  * 1. Deep Palette-derived dark ambient base color (smoothly crossfaded on track change).
- * 2. Heavily blurred album artwork with slow breathing Ken Burns motion (draw-phase only).
- * 3. Flowing 4-color Palette Aurora mesh glow driven in `drawWithCache` (zero per-frame recomposition).
+ * 2. Heavily blurred downsampled (256px) album artwork with slow breathing Ken Burns motion (paused when !isPlaying).
+ * 3. Flowing 4-color Palette Aurora mesh glow driven in `drawWithCache` with pre-cached unit gradients.
  * 4. Optional subtle GPU Music Visualizer layer.
  * 5. Cinema-grade radial & edge vignettes ensuring crisp foreground contrast across bright covers.
  */
@@ -64,7 +65,7 @@ internal fun AmbientBackdropStage(
     auroraColors: AuroraColors,
     accentColor: Color,
     isPlaying: Boolean,
-    currentPositionMs: Long,
+    positionMsProvider: () -> Long,
     durationMs: Long,
     activeVisualizer: VisualizerDefinition,
     modifier: Modifier = Modifier
@@ -80,6 +81,16 @@ internal fun AmbientBackdropStage(
             ?: track?.artworkResId?.let { resId ->
                 "android.resource://${appContext.packageName}/$resId"
             }
+    }
+
+    val blurredArtworkRequest = remember(resolvedArtworkUri, appContext) {
+        resolvedArtworkUri?.let { uri ->
+            ImageRequest.Builder(appContext)
+                .data(uri)
+                .size(256)
+                .crossfade(500)
+                .build()
+        }
     }
 
     var extractedDarkBase by remember(resolvedArtworkUri) {
@@ -116,49 +127,56 @@ internal fun AmbientBackdropStage(
     val c3State = animateColorAsState(extractedAurora.color3, colorAnimSpec, label = "ambientMesh3")
     val c4State = animateColorAsState(extractedAurora.color4, colorAnimSpec, label = "ambientMesh4")
 
-    val infiniteTransition = rememberInfiniteTransition(label = "ambientBackdropMotion")
     val twoPi = (2.0 * PI).toFloat()
+    val steadyZero = remember { mutableFloatStateOf(0f) }
 
-    val driftPhase1 = infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = twoPi,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 24_000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "ambientDrift1"
-    )
-    val driftPhase2 = infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = twoPi,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 34_000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "ambientDrift2"
-    )
-    val breathePhase = infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = twoPi,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 16_000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "ambientBreathe"
-    )
+    val driftPhase1: androidx.compose.runtime.State<Float>
+    val driftPhase2: androidx.compose.runtime.State<Float>
+    val breathePhase: androidx.compose.runtime.State<Float>
+    if (isPlaying) {
+        val infiniteTransition = rememberInfiniteTransition(label = "ambientBackdropMotion")
+        driftPhase1 = infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = twoPi,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 24_000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "ambientDrift1"
+        )
+        driftPhase2 = infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = twoPi,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 34_000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "ambientDrift2"
+        )
+        breathePhase = infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = twoPi,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 16_000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "ambientBreathe"
+        )
+    } else {
+        driftPhase1 = steadyZero
+        driftPhase2 = steadyZero
+        breathePhase = steadyZero
+    }
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(animatedBaseColor)
     ) {
-        // 1. Heavily blurred full-bleed artwork layer with gentle zero-recomposition Ken Burns drift
-        if (!resolvedArtworkUri.isNullOrBlank()) {
+        // 1. Heavily blurred downsampled artwork layer with gentle zero-recomposition Ken Burns drift
+        if (blurredArtworkRequest != null) {
             AsyncImage(
-                model = ImageRequest.Builder(appContext)
-                    .data(resolvedArtworkUri)
-                    .crossfade(500)
-                    .build(),
+                model = blurredArtworkRequest,
                 imageLoader = sharedImageLoader,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
@@ -178,11 +196,21 @@ internal fun AmbientBackdropStage(
             )
         }
 
-        // 2. Palette-derived 4-color atmospheric gradient mesh (strictly draw-phase)
+        // 2. Palette-derived 4-color atmospheric gradient mesh (pre-cached unit gradients, zero per-frame allocations)
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .drawWithCache {
+                    val c1 = c1State.value
+                    val c2 = c2State.value
+                    val c3 = c3State.value
+                    val c4 = c4State.value
+
+                    val orb1Brush = unitAmbientOrbBrush(c1, 0.34f)
+                    val orb2Brush = unitAmbientOrbBrush(c2, 0.28f)
+                    val ribbon1Brush = unitAmbientRibbonBrush(lerp(c1, c3, 0.45f), c3, 0.24f)
+                    val ribbon2Brush = unitAmbientRibbonBrush(c4, lerp(c4, c2, 0.40f), 0.22f)
+
                     onDrawBehind {
                         val w = size.width
                         val h = size.height
@@ -201,51 +229,48 @@ internal fun AmbientBackdropStage(
                         val breathe = 1f + 0.06f * sinB
                         val motionIntensity = if (isPlaying) 1.0f else 0.72f
 
-                        val c1 = c1State.value
-                        val c2 = c2State.value
-                        val c3 = c3State.value
-                        val c4 = c4State.value
-
                         // Left-side warm/primary aura behind album artwork
-                        drawAmbientOrb(
-                            center = Offset(w * (0.24f + 0.08f * sinP1), h * (0.46f + 0.12f * cosP2)),
+                        drawCachedAmbientOrb(
+                            brush = orb1Brush,
+                            centerX = w * (0.24f + 0.08f * sinP1),
+                            centerY = h * (0.46f + 0.12f * cosP2),
                             radius = maxDim * 0.62f * breathe,
-                            color = c1,
-                            peakAlpha = 0.34f * motionIntensity,
+                            alpha = motionIntensity,
                             blendMode = BlendMode.Screen
                         )
 
                         // Right-side expansive glow framing lyrics / ambient clock
-                        drawAmbientOrb(
-                            center = Offset(w * (0.78f - 0.09f * cosP1), h * (0.38f + 0.14f * sinB)),
+                        drawCachedAmbientOrb(
+                            brush = orb2Brush,
+                            centerX = w * (0.78f - 0.09f * cosP1),
+                            centerY = h * (0.38f + 0.14f * sinB),
                             radius = maxDim * 0.58f * (1f - 0.04f * sinB),
-                            color = c2,
-                            peakAlpha = 0.28f * motionIntensity,
+                            alpha = motionIntensity,
                             blendMode = BlendMode.Screen
                         )
 
                         // Sweeping diagonal atmospheric silk curtain
-                        drawAmbientRibbon(
-                            center = Offset(w * (0.50f + 0.12f * sinP2), h * (0.62f + 0.10f * cosP1)),
+                        drawCachedAmbientRibbon(
+                            brush = ribbon1Brush,
+                            centerX = w * (0.50f + 0.12f * sinP2),
+                            centerY = h * (0.62f + 0.10f * cosP1),
                             radius = maxDim * 0.48f,
                             scaleX = 1.80f,
                             scaleY = 0.55f,
                             rotationDeg = -12f + 5f * sinP2,
-                            coreColor = lerp(c1, c3, 0.45f),
-                            edgeColor = c3,
-                            peakAlpha = 0.24f * motionIntensity
+                            alpha = motionIntensity
                         )
 
                         // Subtle bottom-left counter-glow
-                        drawAmbientRibbon(
-                            center = Offset(w * (0.34f - 0.10f * cosP2), h * (0.86f + 0.05f * sinP1)),
+                        drawCachedAmbientRibbon(
+                            brush = ribbon2Brush,
+                            centerX = w * (0.34f - 0.10f * cosP2),
+                            centerY = h * (0.86f + 0.05f * sinP1),
                             radius = maxDim * 0.44f,
                             scaleX = 1.65f,
                             scaleY = 0.48f,
                             rotationDeg = 10f + 4f * cosP1,
-                            coreColor = c4,
-                            edgeColor = lerp(c4, c2, 0.40f),
-                            peakAlpha = 0.22f * motionIntensity
+                            alpha = motionIntensity
                         )
                     }
                 }
@@ -260,7 +285,7 @@ internal fun AmbientBackdropStage(
         ) {
             GpuMusicVisualizer(
                 definition = activeVisualizer,
-                currentPositionMs = currentPositionMs,
+                positionMsProvider = positionMsProvider,
                 durationMs = durationMs,
                 isPlaying = isPlaying,
                 currentTrack = track,
@@ -301,56 +326,70 @@ internal fun AmbientBackdropStage(
     }
 }
 
-private fun DrawScope.drawAmbientOrb(
-    center: Offset,
+private fun unitAmbientOrbBrush(color: Color, peakAlpha: Float): Brush =
+    Brush.radialGradient(
+        0.00f to color.copy(alpha = peakAlpha),
+        0.38f to color.copy(alpha = peakAlpha * 0.54f),
+        0.72f to color.copy(alpha = peakAlpha * 0.16f),
+        1.00f to Color.Transparent,
+        center = Offset.Zero,
+        radius = 1f
+    )
+
+private fun unitAmbientRibbonBrush(coreColor: Color, edgeColor: Color, peakAlpha: Float): Brush =
+    Brush.radialGradient(
+        0.00f to coreColor.copy(alpha = peakAlpha),
+        0.36f to edgeColor.copy(alpha = peakAlpha * 0.52f),
+        0.70f to edgeColor.copy(alpha = peakAlpha * 0.14f),
+        1.00f to Color.Transparent,
+        center = Offset.Zero,
+        radius = 1f
+    )
+
+private fun DrawScope.drawCachedAmbientOrb(
+    brush: Brush,
+    centerX: Float,
+    centerY: Float,
     radius: Float,
-    color: Color,
-    peakAlpha: Float,
+    alpha: Float,
     blendMode: BlendMode
 ) {
-    if (radius <= 0f || peakAlpha <= 0.001f) return
-    drawCircle(
-        brush = Brush.radialGradient(
-            0.00f to color.copy(alpha = peakAlpha),
-            0.38f to color.copy(alpha = peakAlpha * 0.54f),
-            0.72f to color.copy(alpha = peakAlpha * 0.16f),
-            1.00f to Color.Transparent,
-            center = center,
-            radius = radius
-        ),
-        radius = radius,
-        center = center,
-        blendMode = blendMode
-    )
+    if (radius <= 0f || alpha <= 0.001f) return
+    withTransform({
+        translate(left = centerX, top = centerY)
+        scale(scaleX = radius, scaleY = radius, pivot = Offset.Zero)
+    }) {
+        drawCircle(
+            brush = brush,
+            radius = 1f,
+            center = Offset.Zero,
+            alpha = alpha,
+            blendMode = blendMode
+        )
+    }
 }
 
-private fun DrawScope.drawAmbientRibbon(
-    center: Offset,
+private fun DrawScope.drawCachedAmbientRibbon(
+    brush: Brush,
+    centerX: Float,
+    centerY: Float,
     radius: Float,
     scaleX: Float,
     scaleY: Float,
     rotationDeg: Float,
-    coreColor: Color,
-    edgeColor: Color,
-    peakAlpha: Float
+    alpha: Float
 ) {
-    if (radius <= 0f || peakAlpha <= 0.001f) return
+    if (radius <= 0f || alpha <= 0.001f) return
     withTransform({
-        translate(left = center.x, top = center.y)
+        translate(left = centerX, top = centerY)
         rotate(degrees = rotationDeg, pivot = Offset.Zero)
-        scale(scaleX = scaleX, scaleY = scaleY, pivot = Offset.Zero)
+        scale(scaleX = radius * scaleX, scaleY = radius * scaleY, pivot = Offset.Zero)
     }) {
         drawCircle(
-            brush = Brush.radialGradient(
-                0.00f to coreColor.copy(alpha = peakAlpha),
-                0.36f to edgeColor.copy(alpha = peakAlpha * 0.52f),
-                0.70f to edgeColor.copy(alpha = peakAlpha * 0.14f),
-                1.00f to Color.Transparent,
-                center = Offset.Zero,
-                radius = radius
-            ),
-            radius = radius,
+            brush = brush,
+            radius = 1f,
             center = Offset.Zero,
+            alpha = alpha,
             blendMode = BlendMode.Screen
         )
     }

@@ -228,7 +228,7 @@ fun PlaylistDetailScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.fillMaxSize()
             ) {
-                item(key = "playlist_hero") {
+                item(key = "playlist_hero", contentType = "playlist_hero") {
                     PlaylistDetailHeroSection(
                         playlist = playlist,
                         accentColor = accentColor,
@@ -240,7 +240,7 @@ fun PlaylistDetailScreen(
                 }
 
                 if (playlist.tracks.isEmpty()) {
-                    item(key = "playlist_empty_tracks") {
+                    item(key = "playlist_empty_tracks", contentType = "empty_state") {
                         PlaylistTracksEmptyCard(
                             accentColor = accentColor,
                             modifier = Modifier
@@ -249,7 +249,7 @@ fun PlaylistDetailScreen(
                         )
                     }
                 } else {
-                    item(key = "playlist_tracks_header") {
+                    item(key = "playlist_tracks_header", contentType = "section_header") {
                         PlaylistTracksSectionHeader(
                             trackCount = playlist.tracks.size,
                             durationLabel = playlist.formattedDuration,
@@ -260,7 +260,8 @@ fun PlaylistDetailScreen(
 
                     itemsIndexed(
                         items = playlist.tracks,
-                        key = { index, track -> "pl_track_${index}_${track.id}" }
+                        key = { index, track -> "pl_track_${index}_${track.id}" },
+                        contentType = { _, _ -> "playlist_track_row" }
                     ) { index, track ->
                         val isPlayingThis = track.id == currentPlayingTrackId
                         val isLiked = likedTrackIds.contains(track.id)

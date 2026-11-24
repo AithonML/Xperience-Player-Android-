@@ -140,7 +140,9 @@ import com.xperience.player.ui.component.GlassCircleButton
 import com.xperience.player.ui.component.GlassComponent
 import com.xperience.player.ui.component.LocalAppBackdrop
 import com.xperience.player.ui.component.LocalGlassEffectConfig
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import com.xperience.player.ui.component.backdrop.backdrops.layerBackdrop
+import com.xperience.player.ui.component.backdrop.backdrops.rememberBackdropFreeze
 import com.xperience.player.ui.component.backdrop.backdrops.rememberLayerBackdrop
 import com.xperience.player.ui.component.isGlassAllowed
 import com.xperience.player.ui.component.liquidGlass
@@ -154,6 +156,8 @@ import com.xperience.player.ui.theme.LocalAppColors
 import com.xperience.player.ui.theme.PlusJakartaSans
 import com.xperience.player.ui.utils.pressWobble
 import com.xperience.player.ui.visualizer.VisualizerSelectorSheetContent
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.nio.charset.StandardCharsets
 
@@ -187,7 +191,7 @@ fun NowPlayingScreen(
     modifier: Modifier = Modifier,
     onMoveQueueItem: (fromIndex: Int, toIndex: Int) -> Unit = { _, _ -> },
     onPlayQueueIndex: (Int) -> Unit = {},
-    selectedVisualizer: VisualizerDefinition = VisualizerRepository.BuiltInPresets.first(),
+    selectedVisualizer: VisualizerDefinition = VisualizerRepository.DefaultPreset,
     availableVisualizers: List<VisualizerDefinition> = emptyList(),
     onSelectVisualizer: (VisualizerDefinition) -> Unit = {},
     onImportVisualizer: (String, String?) -> Unit = { _, _ -> },
@@ -214,7 +218,8 @@ fun NowPlayingScreen(
     onSetAsRingtone: (TrackItem) -> Unit = {},
     castState: CastPlaybackState = CastPlaybackState(),
     castRouteCount: Int = 0,
-    onOpenCastPicker: () -> Unit = onOpenOutputSwitcher
+    onOpenCastPicker: () -> Unit = onOpenOutputSwitcher,
+    playbackPositionMsFlow: StateFlow<Long> = remember { MutableStateFlow(playbackState.currentPositionMs) }
 ) {
     val track = playbackState.currentTrack ?: return
     val context = LocalContext.current
@@ -295,12 +300,15 @@ fun NowPlayingScreen(
         }
     )
 
+    val backdropFreeze = rememberBackdropFreeze()
+
     CompositionLocalProvider(
         LocalAppBackdrop provides nowPlayingBackdrop
     ) {
         Box(
             modifier = modifier
                 .fillMaxSize()
+                .nestedScroll(backdropFreeze.connection)
                 .graphicsLayer {
                     translationY = dragOffsetY.value.coerceAtLeast(0f)
                 }
@@ -340,8 +348,10 @@ fun NowPlayingScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer()
-                    .layerBackdrop(nowPlayingBackdrop)
+                    .layerBackdrop(
+                        nowPlayingBackdrop,
+                        frozen = { backdropFreeze.frozen() || dragOffsetY.value > 0.5f }
+                    )
             ) {
                 NowPlayingBackground(
                     track = track,
@@ -349,7 +359,7 @@ fun NowPlayingScreen(
                     isPlaying = playbackState.isPlaying,
                     isCanvasPaused = (!isTwoPane && isLyricsOverlayActive) || isVideoModeActive,
                     selectedVisualizer = selectedVisualizer,
-                    currentPositionMs = playbackState.currentPositionMs,
+                    positionMsProvider = { playbackPositionMsFlow.value },
                     durationMs = playbackState.durationMs,
                     accentColor = accentColor,
                     isOverlayActive = (!isTwoPane && isCenterOverlayActive) || (!isTwoPane && isVideoModeActive),
@@ -564,7 +574,7 @@ fun NowPlayingScreen(
                                                 isResolvingMusicVideo = isResolvingMusicVideo,
                                                 isVideoModeActive = isVideoModeActive,
                                                 isPlaying = playbackState.isPlaying,
-                                                currentPositionMs = playbackState.currentPositionMs,
+                                                playbackPositionMsFlow = playbackPositionMsFlow,
                                                 playbackSpeed = dspState.effectiveSpeed,
                                                 onMusicVideoPlaybackError = onMusicVideoPlaybackError,
                                                 accentColor = accentColor,
@@ -575,6 +585,7 @@ fun NowPlayingScreen(
                                         NowPlayingPrimaryControls(
                                             track = track,
                                             playbackState = playbackState,
+                                            playbackPositionMsFlow = playbackPositionMsFlow,
                                             isLiked = isLiked,
                                             isLyricsHighlighted = activeSupportingTab == NowPlayingSupportingTab.LYRICS,
                                             isQueueHighlighted = activeSupportingTab == NowPlayingSupportingTab.QUEUE,
@@ -614,6 +625,7 @@ fun NowPlayingScreen(
                                     onSelectTab = { activeSupportingTab = it },
                                     track = track,
                                     playbackState = playbackState,
+                                    playbackPositionMsFlow = playbackPositionMsFlow,
                                     lyrics = lyrics,
                                     lyricsProviderName = lyricsProviderName,
                                     accentColor = accentColor,
@@ -672,7 +684,7 @@ fun NowPlayingScreen(
                                             fallbackThumbnailUri = track.artworkUri,
                                             isPlaying = playbackState.isPlaying,
                                             isResolvingMusicVideo = isResolvingMusicVideo,
-                                            currentPositionMs = playbackState.currentPositionMs,
+                                            playbackPositionMsFlow = playbackPositionMsFlow,
                                             playbackSpeed = dspState.effectiveSpeed,
                                             onMusicVideoPlaybackError = onMusicVideoPlaybackError,
                                             accentColor = accentColor,
@@ -688,7 +700,7 @@ fun NowPlayingScreen(
                                 NowPlayingCenterMode.LYRICS -> {
                                     SynchronizedLyricsView(
                                         lines = lyrics,
-                                        currentPositionMs = playbackState.currentPositionMs,
+                                        playbackPositionMsFlow = playbackPositionMsFlow,
                                         providerName = lyricsProviderName,
                                         accentColor = accentColor,
                                         appColors = appColors,
@@ -723,6 +735,7 @@ fun NowPlayingScreen(
                     NowPlayingPrimaryControls(
                         track = track,
                         playbackState = playbackState,
+                        playbackPositionMsFlow = playbackPositionMsFlow,
                         isLiked = isLiked,
                         isLyricsHighlighted = isLyricsOverlayActive,
                         isQueueHighlighted = isQueueOverlayActive,
@@ -888,7 +901,7 @@ private fun NowPlayingArtworkShowcase(
     musicVideo: ResolvedMusicVideo? = null,
     isResolvingMusicVideo: Boolean = false,
     isVideoModeActive: Boolean = false,
-    currentPositionMs: Long = 0L,
+    playbackPositionMsFlow: StateFlow<Long> = remember { MutableStateFlow(0L) },
     playbackSpeed: Float = 1.0f,
     onMusicVideoPlaybackError: () -> Unit = {}
 ) {
@@ -932,7 +945,7 @@ private fun NowPlayingArtworkShowcase(
                 fallbackThumbnailUri = track.artworkUri,
                 isPlaying = isPlaying,
                 isResolvingMusicVideo = isResolvingMusicVideo,
-                currentPositionMs = currentPositionMs,
+                playbackPositionMsFlow = playbackPositionMsFlow,
                 playbackSpeed = playbackSpeed,
                 accentColor = accentColor,
                 onPlaybackExhausted = onMusicVideoPlaybackError,
@@ -1074,7 +1087,7 @@ private fun NowPlayingOfficialVideoStage(
     fallbackThumbnailUri: String?,
     isPlaying: Boolean,
     isResolvingMusicVideo: Boolean,
-    currentPositionMs: Long,
+    playbackPositionMsFlow: StateFlow<Long>,
     playbackSpeed: Float,
     onMusicVideoPlaybackError: () -> Unit,
     accentColor: Color,
@@ -1116,7 +1129,7 @@ private fun NowPlayingOfficialVideoStage(
                 fallbackThumbnailUri = fallbackThumbnailUri,
                 isPlaying = isPlaying,
                 isResolvingMusicVideo = isResolvingMusicVideo,
-                currentPositionMs = currentPositionMs,
+                playbackPositionMsFlow = playbackPositionMsFlow,
                 playbackSpeed = playbackSpeed,
                 accentColor = accentColor,
                 onPlaybackExhausted = onMusicVideoPlaybackError,
@@ -1138,12 +1151,13 @@ private fun OfficialMusicVideoPlayerSurface(
     fallbackThumbnailUri: String?,
     isPlaying: Boolean,
     isResolvingMusicVideo: Boolean,
-    currentPositionMs: Long,
+    playbackPositionMsFlow: StateFlow<Long>,
     playbackSpeed: Float,
     accentColor: Color,
     onPlaybackExhausted: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val currentPositionMs by playbackPositionMsFlow.collectAsState()
     val context = LocalContext.current
     val appContext = context.applicationContext
     val sharedImageLoader = remember(appContext) {
@@ -1241,6 +1255,7 @@ private fun OfficialMusicVideoPlayerSurface(
 private fun NowPlayingPrimaryControls(
     track: TrackItem,
     playbackState: PlaybackState,
+    playbackPositionMsFlow: StateFlow<Long>,
     isLiked: Boolean,
     isLyricsHighlighted: Boolean,
     isQueueHighlighted: Boolean,
@@ -1340,7 +1355,7 @@ private fun NowPlayingPrimaryControls(
 
         // NATIVE ANDROID 13+ SQUIGGLY PROGRESS BAR INSIDE TALLER LIQUIDGLASS CAPSULE
         SquigglyProgressBar(
-            currentPositionMs = playbackState.currentPositionMs,
+            playbackPositionMsFlow = playbackPositionMsFlow,
             durationMs = playbackState.durationMs,
             isPlaying = playbackState.isPlaying,
             accentColor = accentColor,
@@ -1502,6 +1517,7 @@ private fun NowPlayingSupportingPanelCard(
     onSelectTab: (NowPlayingSupportingTab) -> Unit,
     track: TrackItem,
     playbackState: PlaybackState,
+    playbackPositionMsFlow: StateFlow<Long>,
     lyrics: List<LyricLine>,
     lyricsProviderName: String?,
     accentColor: Color,
@@ -1600,7 +1616,7 @@ private fun NowPlayingSupportingPanelCard(
                     NowPlayingSupportingTab.LYRICS -> {
                         SynchronizedLyricsView(
                             lines = lyrics,
-                            currentPositionMs = playbackState.currentPositionMs,
+                            playbackPositionMsFlow = playbackPositionMsFlow,
                             providerName = lyricsProviderName,
                             accentColor = accentColor,
                             appColors = appColors,

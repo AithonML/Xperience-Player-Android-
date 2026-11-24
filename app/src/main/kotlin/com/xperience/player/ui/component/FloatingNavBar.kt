@@ -102,6 +102,7 @@ fun AppFloatingNavBar(
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier,
     pureBlack: Boolean = false,
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long>? = null,
 ) {
     val navSearch = LocalNavSearchState.current
 
@@ -141,6 +142,7 @@ fun AppFloatingNavBar(
                 scrollConnection = scrollConnection,
                 pureBlack = pureBlack,
                 playbackState = playbackState,
+                playbackPositionMsFlow = playbackPositionMsFlow,
                 onMiniPlayerClick = onMiniPlayerClick,
                 onTogglePlayPause = onTogglePlayPause,
                 onSkipNext = onSkipNext,
@@ -162,6 +164,7 @@ private fun AppFloatingNavBarChrome(
     scrollConnection: FloatingTabBarScrollConnection,
     pureBlack: Boolean,
     playbackState: PlaybackState,
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long>?,
     onMiniPlayerClick: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSkipNext: () -> Unit,
@@ -221,6 +224,7 @@ private fun AppFloatingNavBarChrome(
                     onSeek = onSeek,
                     modifier = Modifier,
                     surfaceModifier = accessoryModifier.then(tabBarContentModifier),
+                    playbackPositionMsFlow = playbackPositionMsFlow,
                 )
             }
         } else {
@@ -241,6 +245,7 @@ private fun AppFloatingNavBarChrome(
                     onSeek = onSeek,
                     modifier = Modifier.fillMaxWidth(),
                     surfaceModifier = accessoryModifier.fillMaxWidth().then(tabBarContentModifier),
+                    playbackPositionMsFlow = playbackPositionMsFlow,
                 )
             }
         } else {

@@ -3,10 +3,13 @@ package com.xperience.player.data
 import android.content.Context
 import android.util.Log
 import com.xperience.player.domain.model.TrackItem
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -17,15 +20,27 @@ import java.io.File
  * Ensures favorite tracks (both online and local) survive application restarts,
  * and maintains reactive StateFlows for instant UI responsiveness across all screens.
  */
-class FavoritesRepository(private val context: Context) {
+class FavoritesRepository(context: Context) {
+
+    private val appContext: Context = context.applicationContext
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     companion object {
         private const val TAG = "FavoritesRepository"
         private const val FILE_NAME = "xperience_favorites.json"
+
+        @Volatile
+        private var instance: FavoritesRepository? = null
+
+        fun getInstance(context: Context): FavoritesRepository {
+            return instance ?: synchronized(this) {
+                instance ?: FavoritesRepository(context.applicationContext).also { instance = it }
+            }
+        }
     }
 
     private val favoritesFile: File
-        get() = File(context.filesDir, FILE_NAME)
+        get() = File(appContext.filesDir, FILE_NAME)
 
     private val _likedTracks = MutableStateFlow<List<TrackItem>>(emptyList())
     val likedTracks: StateFlow<List<TrackItem>> = _likedTracks.asStateFlow()
@@ -34,7 +49,9 @@ class FavoritesRepository(private val context: Context) {
     val likedTrackIds: StateFlow<Set<String>> = _likedTrackIds.asStateFlow()
 
     init {
-        loadFavoritesFromDisk()
+        ioScope.launch {
+            loadFavoritesFromDisk()
+        }
     }
 
     /**
@@ -81,7 +98,7 @@ class FavoritesRepository(private val context: Context) {
             }
 
             val counterparts = com.xperience.player.service.YouTubeMusicService.loadAtvCounterpartMapSafe(
-                com.xperience.player.service.YouTubeMusicService.getAtvCounterpartCacheFile(context)
+                com.xperience.player.service.YouTubeMusicService.getAtvCounterpartCacheFile(appContext)
             )
             val (list, modified) = com.xperience.player.service.YouTubeMusicService.sanitizePersistedTracks(
                 rawList,

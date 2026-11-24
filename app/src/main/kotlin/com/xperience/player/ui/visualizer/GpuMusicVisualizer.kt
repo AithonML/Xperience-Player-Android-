@@ -17,6 +17,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.xperience.player.domain.model.TrackItem
 import com.xperience.player.domain.model.visualizer.VisualizerDefinition
 import com.xperience.player.domain.model.visualizer.VisualizerRenderMode
@@ -25,6 +28,105 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
+
+private val StrokeTerrainPrimary = Stroke(width = 2.4f, cap = StrokeCap.Round)
+private val StrokeTerrainSub = Stroke(width = 1.25f, cap = StrokeCap.Round)
+private val StrokeBgWave = Stroke(width = 2.4f, cap = StrokeCap.Round)
+private val StrokeSphereWire = Stroke(width = 1.3f, cap = StrokeCap.Round)
+private val StrokeAuroraGlow = Stroke(width = 8.0f, cap = StrokeCap.Round)
+private val StrokeAuroraCore = Stroke(width = 3.2f, cap = StrokeCap.Round)
+private val StrokePulsarRing = Stroke(width = 2.2f)
+
+private const val SPHERE_DEPTH_BUCKETS = 5
+private const val TERRAIN_SUB_LINES = 7
+
+/**
+ * Reusable scratch buffers and cached brushes for [GpuMusicVisualizer] to eliminate
+ * per-frame GC allocations inside the Canvas draw loop.
+ */
+private class VisualizerDrawCache {
+    val workPath = Path()
+    val sphereBucketPaths = Array(SPHERE_DEPTH_BUCKETS) { Path() }
+
+    // Flat projection buffers for HarmonicWireframeSphere
+    var projX = FloatArray(0)
+    var projY = FloatArray(0)
+    var energyGrid = FloatArray(0)
+    var depthGrid = FloatArray(0)
+
+    fun ensureSphereCapacity(size: Int) {
+        if (projX.size < size) {
+            projX = FloatArray(size)
+            projY = FloatArray(size)
+            energyGrid = FloatArray(size)
+            depthGrid = FloatArray(size)
+        }
+    }
+
+    // Cached brushes for NeonTerrainPeaks
+    private var cachedTerrainPalette: List<Color>? = null
+    private var cachedTerrainWidth: Float = -1f
+    private var cachedTerrainHeight: Float = -1f
+    private var cachedTerrainLayers: Int = -1
+    private var cachedTerrainColumns: Int = -1
+    var terrainRibbonBrushes: Array<Array<Brush>> = emptyArray()
+    var terrainStemBrushes: Array<Brush> = emptyArray()
+
+    fun ensureTerrainBrushes(
+        palette: List<Color>,
+        width: Float,
+        height: Float,
+        layers: Int,
+        columns: Int
+    ) {
+        if (cachedTerrainPalette === palette &&
+            cachedTerrainWidth == width &&
+            cachedTerrainHeight == height &&
+            cachedTerrainLayers == layers &&
+            cachedTerrainColumns == columns
+        ) {
+            return
+        }
+        cachedTerrainPalette = palette
+        cachedTerrainWidth = width
+        cachedTerrainHeight = height
+        cachedTerrainLayers = layers
+        cachedTerrainColumns = columns
+
+        val stemStartY = height * 0.12f
+        val stemEndY = height * 0.72f
+        terrainStemBrushes = Array(columns) { c ->
+            val u = c.toFloat() / (columns - 1).coerceAtLeast(1)
+            val col = samplePalette(palette, u)
+            Brush.verticalGradient(
+                colors = listOf(
+                    col.copy(alpha = 0.92f),
+                    col.copy(alpha = 0.48f),
+                    col.copy(alpha = 0.06f)
+                ),
+                startY = stemStartY,
+                endY = stemEndY
+            )
+        }
+
+        terrainRibbonBrushes = Array(layers) { layer ->
+            Array(TERRAIN_SUB_LINES) { sub ->
+                val subNorm = sub.toFloat() / TERRAIN_SUB_LINES
+                val alpha = ((1.0f - (subNorm * 0.72f)) * 0.85f).coerceIn(0.15f, 0.92f)
+                val stops = Array(palette.size) { p ->
+                    val pos = p.toFloat() / (palette.size - 1).coerceAtLeast(1)
+                    val c = palette[(p + layer) % palette.size]
+                    pos to c.copy(alpha = alpha)
+                }
+                Brush.horizontalGradient(
+                    colorStops = stops,
+                    startX = 0f,
+                    endX = width
+                )
+            }
+        }
+    }
+}
 
 /**
  * High-performance GPU-accelerated music visualizer control for Jetpack Compose.
@@ -38,12 +140,13 @@ import kotlin.math.sin
 @Composable
 fun GpuMusicVisualizer(
     definition: VisualizerDefinition,
-    currentPositionMs: Long,
+    positionMsProvider: () -> Long,
     durationMs: Long,
     isPlaying: Boolean,
     currentTrack: TrackItem?,
     accentColor: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isVisible: Boolean = true
 ) {
     if (definition.renderMode == VisualizerRenderMode.None) {
         return
@@ -54,19 +157,23 @@ fun GpuMusicVisualizer(
         sampler.setTrack(currentTrack)
     }
 
+    val drawCache = remember { VisualizerDrawCache() }
+    val lifecycleOwner = LocalLifecycleOwner.current
     var phaseTime by remember { mutableFloatStateOf(0f) }
 
-    LaunchedEffect(isPlaying, definition.speed) {
+    LaunchedEffect(isPlaying, isVisible, definition.speed, lifecycleOwner) {
+        if (!isPlaying || !isVisible) return@LaunchedEffect
         val speed = definition.speed.toFloat().coerceIn(0.1f, 4.0f)
-        var lastNano = 0L
-        while (true) {
-            withFrameNanos { now ->
-                if (lastNano != 0L) {
-                    val dt = ((now - lastNano) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
-                    val rate = if (isPlaying) 1.0f else 0.35f
-                    phaseTime += dt * 1.5f * speed * rate
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            var lastNano = 0L
+            while (true) {
+                withFrameNanos { now ->
+                    if (lastNano != 0L) {
+                        val dt = ((now - lastNano) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+                        phaseTime += dt * 1.5f * speed
+                    }
+                    lastNano = now
                 }
-                lastNano = now
             }
         }
     }
@@ -80,7 +187,7 @@ fun GpuMusicVisualizer(
         val height = size.height
         if (width <= 8f || height <= 8f) return@Canvas
 
-        val frame = sampler.sample(currentPositionMs, durationMs, isPlaying, definition)
+        val frame = sampler.sample(positionMsProvider(), durationMs, isPlaying, definition)
 
         // Render Selected Geometry Engine (preserves background tone and opacity identical to visualizers off)
         when (definition.renderMode) {
@@ -91,7 +198,8 @@ fun GpuMusicVisualizer(
                     definition = definition,
                     palette = palette,
                     frame = frame,
-                    phaseTime = phaseTime
+                    phaseTime = phaseTime,
+                    cache = drawCache
                 )
             }
             VisualizerRenderMode.HarmonicWireframeSphere -> {
@@ -101,7 +209,8 @@ fun GpuMusicVisualizer(
                     definition = definition,
                     palette = palette,
                     frame = frame,
-                    phaseTime = phaseTime
+                    phaseTime = phaseTime,
+                    cache = drawCache
                 )
             }
             VisualizerRenderMode.AuroraPrismaticWaves -> {
@@ -111,7 +220,8 @@ fun GpuMusicVisualizer(
                     definition = definition,
                     palette = palette,
                     frame = frame,
-                    phaseTime = phaseTime
+                    phaseTime = phaseTime,
+                    cache = drawCache
                 )
             }
             VisualizerRenderMode.RadialCyberPulsar -> {
@@ -129,6 +239,30 @@ fun GpuMusicVisualizer(
     }
 }
 
+/** Backwards-compatible overload accepting a plain [currentPositionMs] value. */
+@Composable
+fun GpuMusicVisualizer(
+    definition: VisualizerDefinition,
+    currentPositionMs: Long,
+    durationMs: Long,
+    isPlaying: Boolean,
+    currentTrack: TrackItem?,
+    accentColor: Color,
+    modifier: Modifier = Modifier,
+    isVisible: Boolean = true
+) {
+    GpuMusicVisualizer(
+        definition = definition,
+        positionMsProvider = { currentPositionMs },
+        durationMs = durationMs,
+        isPlaying = isPlaying,
+        currentTrack = currentTrack,
+        accentColor = accentColor,
+        modifier = modifier,
+        isVisible = isVisible
+    )
+}
+
 // =========================================================================
 // 1. NEON TERRAIN PEAKS 3D
 // =========================================================================
@@ -138,12 +272,17 @@ private fun DrawScope.drawNeonTerrainPeaks(
     definition: VisualizerDefinition,
     palette: List<Color>,
     frame: AudioVisualizerSampler.SpectrumFrame,
-    phaseTime: Float
+    phaseTime: Float,
+    cache: VisualizerDrawCache
 ) {
     val columns = definition.gridResolution.coerceIn(24, 64)
+    val layers = definition.waveLayers.coerceIn(3, 12)
+    cache.ensureTerrainBrushes(palette, width, height, layers, columns)
+
     val baseHorizonY = height * 0.62f
     val bands = frame.bands
     val peakHold = frame.peakHold
+    val stemBrushes = cache.terrainStemBrushes
 
     // Pass A: Vertical Neon Spectrum Stems & Glowing Particle Tips
     for (c in 0 until columns) {
@@ -160,17 +299,9 @@ private fun DrawScope.drawNeonTerrainPeaks(
 
         val col = samplePalette(palette, u)
 
-        // Vertical glowing stem gradient
+        // Vertical glowing stem using cached brush
         drawLine(
-            brush = Brush.verticalGradient(
-                colors = listOf(
-                    col.copy(alpha = 0.92f),
-                    col.copy(alpha = 0.48f),
-                    col.copy(alpha = 0.04f)
-                ),
-                startY = topY,
-                endY = baseY + 35f
-            ),
+            brush = stemBrushes[c],
             start = Offset(x, topY),
             end = Offset(x, baseY + 35f),
             strokeWidth = 2.2f,
@@ -212,20 +343,21 @@ private fun DrawScope.drawNeonTerrainPeaks(
     }
 
     // Pass B: 3D Perspective Layered Wireframe Ribbon Terrain (Front to Back)
-    val layers = definition.waveLayers.coerceIn(3, 12)
-    val subLinesPerLayer = 7
+    val path = cache.workPath
+    val ribbonBrushes = cache.terrainRibbonBrushes
 
     for (layer in 0 until layers) {
         val layerNorm = layer.toFloat() / (layers - 1).coerceAtLeast(1) // 0 = back, 1 = front
         val layerBaseY = (height * 0.56f) + (layerNorm * height * 0.34f)
         val perspectiveSpread = 1.0f + (layerNorm * 0.28f)
         val ampScale = (28.0f + (frame.bassEnergy * 52.0f)) * (1.15f - (layerNorm * 0.35f))
+        val layerBrushes = ribbonBrushes[layer]
 
-        for (sub in 0 until subLinesPerLayer) {
-            val subNorm = sub.toFloat() / subLinesPerLayer
+        for (sub in 0 until TERRAIN_SUB_LINES) {
+            val subNorm = sub.toFloat() / TERRAIN_SUB_LINES
             val yOffset = sub * 3.8f * perspectiveSpread
 
-            val path = Path()
+            path.rewind()
             val segs = 64
             for (s in 0..segs) {
                 val u = s.toFloat() / segs
@@ -244,24 +376,10 @@ private fun DrawScope.drawNeonTerrainPeaks(
                 }
             }
 
-            val alpha = ((1.0f - (subNorm * 0.72f)) * 0.85f).coerceIn(0.15f, 0.92f)
-            val strokeW = if (sub == 0) 2.4f else 1.25f
-
-            // Create gradient brush across the layer width
-            val stops = palette.indices.map { p ->
-                val pos = p.toFloat() / (palette.size - 1).coerceAtLeast(1)
-                val c = palette[(p + layer) % palette.size]
-                pos to c.copy(alpha = alpha)
-            }.toTypedArray()
-
             drawPath(
                 path = path,
-                brush = Brush.horizontalGradient(
-                    colorStops = stops,
-                    startX = 0f,
-                    endX = width
-                ),
-                style = Stroke(width = strokeW, cap = StrokeCap.Round)
+                brush = layerBrushes[sub],
+                style = if (sub == 0) StrokeTerrainPrimary else StrokeTerrainSub
             )
         }
     }
@@ -276,9 +394,11 @@ private fun DrawScope.drawHarmonicWireframeSphere(
     definition: VisualizerDefinition,
     palette: List<Color>,
     frame: AudioVisualizerSampler.SpectrumFrame,
-    phaseTime: Float
+    phaseTime: Float,
+    cache: VisualizerDrawCache
 ) {
     val bands = frame.bands
+    val bgPath = cache.workPath
 
     // Pass A: Background Flowing Translucent Wave Ribbons
     val bgWaves = 5
@@ -286,7 +406,7 @@ private fun DrawScope.drawHarmonicWireframeSphere(
         val wy = height * (0.20f + (w * 0.16f))
         val wc = samplePalette(palette, w.toFloat() / (bgWaves - 1).coerceAtLeast(1))
 
-        val bgPath = Path()
+        bgPath.rewind()
         for (xStep in 0..48) {
             val u = xStep / 48f
             val px = u * width
@@ -296,13 +416,20 @@ private fun DrawScope.drawHarmonicWireframeSphere(
         drawPath(
             path = bgPath,
             color = wc.copy(alpha = 0.26f),
-            style = Stroke(width = 2.4f, cap = StrokeCap.Round)
+            style = StrokeBgWave
         )
     }
 
     // Pass B: 3D Spherical Harmonic Wireframe Mesh
     val latRings = (definition.gridResolution / 2).coerceIn(16, 32)
     val lonSegments = definition.gridResolution.coerceIn(24, 48)
+    val stride = lonSegments + 1
+    cache.ensureSphereCapacity((latRings + 1) * stride)
+
+    val projX = cache.projX
+    val projY = cache.projY
+    val energyGrid = cache.energyGrid
+    val depthGrid = cache.depthGrid
 
     val centerX = width * 0.5f
     val centerY = height * 0.48f
@@ -317,11 +444,6 @@ private fun DrawScope.drawHarmonicWireframeSphere(
     val cosX = cos(rotX); val sinX = sin(rotX)
     val cosZ = cos(rotZ); val sinZ = sin(rotZ)
 
-    val projX = Array(latRings + 1) { FloatArray(lonSegments + 1) }
-    val projY = Array(latRings + 1) { FloatArray(lonSegments + 1) }
-    val energyGrid = Array(latRings + 1) { FloatArray(lonSegments + 1) }
-    val depthGrid = Array(latRings + 1) { FloatArray(lonSegments + 1) }
-
     for (i in 0..latRings) {
         val v = i.toFloat() / latRings
         val theta = v * PI.toFloat()
@@ -330,6 +452,7 @@ private fun DrawScope.drawHarmonicWireframeSphere(
 
         val bandIdx = (v * (bands.size - 1)).toInt().coerceIn(0, bands.size - 1)
         val bandVal = bands[bandIdx]
+        val rowOffset = i * stride
 
         for (j in 0..lonSegments) {
             val u = j.toFloat() / lonSegments
@@ -347,17 +470,14 @@ private fun DrawScope.drawHarmonicWireframeSphere(
             val z0 = r * sinTheta * sin(phi)
 
             // Apply 3D Rotation (Yaw-Pitch-Roll)
-            // 1. Rotate Y
             val x1 = (x0 * cosY) + (z0 * sinY)
             val y1 = y0
             val z1 = (-x0 * sinY) + (z0 * cosY)
 
-            // 2. Rotate X
             val x2 = x1
             val y2 = (y1 * cosX) - (z1 * sinX)
             val z2 = (y1 * sinX) + (z1 * cosX)
 
-            // 3. Rotate Z
             val xRot = (x2 * cosZ) - (y2 * sinZ)
             val yRot = (x2 * sinZ) + (y2 * cosZ)
             val zRot = z2
@@ -365,44 +485,53 @@ private fun DrawScope.drawHarmonicWireframeSphere(
             val cameraDist = baseRadius * 3.4f
             val perspective = cameraDist / maxOf(60.0f, cameraDist - zRot)
 
-            projX[i][j] = centerX + (xRot * perspective)
-            projY[i][j] = centerY + (yRot * perspective)
-            energyGrid[i][j] = ((totalDeform - 0.82f) * 2.4f).coerceIn(0f, 1f)
-            depthGrid[i][j] = zRot / baseRadius
+            val idx = rowOffset + j
+            projX[idx] = centerX + (xRot * perspective)
+            projY[idx] = centerY + (yRot * perspective)
+            energyGrid[idx] = ((totalDeform - 0.82f) * 2.4f).coerceIn(0f, 1f)
+            depthGrid[idx] = zRot / baseRadius
         }
     }
 
-    // Draw Wireframe Lines connecting quads
+    // Batch wireframe segments into depth-bucketed paths (5 drawPath calls instead of ~3,072 drawLine calls)
+    val bucketPaths = cache.sphereBucketPaths
+    for (b in 0 until SPHERE_DEPTH_BUCKETS) {
+        bucketPaths[b].rewind()
+    }
+
     for (i in 0 until latRings) {
+        val rowOffset = i * stride
+        val nextRowOffset = (i + 1) * stride
         for (j in 0 until lonSegments) {
-            val p00 = Offset(projX[i][j], projY[i][j])
-            val p01 = Offset(projX[i][j + 1], projY[i][j + 1])
-            val p10 = Offset(projX[i + 1][j], projY[i + 1][j])
+            val idx00 = rowOffset + j
+            val idx01 = idx00 + 1
+            val idx10 = nextRowOffset + j
 
-            val e = (energyGrid[i][j] + energyGrid[i][j + 1]) * 0.5f
-            val depth = depthGrid[i][j]
-            val alpha = (0.45f + (depth * 0.28f) + (e * 0.25f)).coerceIn(0.18f, 0.95f)
+            val depthNorm = ((depthGrid[idx00] + 1f) * 0.5f).coerceIn(0f, 0.999f)
+            val bucket = (depthNorm * SPHERE_DEPTH_BUCKETS).toInt().coerceIn(0, SPHERE_DEPTH_BUCKETS - 1)
+            val bucketPath = bucketPaths[bucket]
 
-            val wireColor = samplePalette(palette, e)
-            val strokeCol = wireColor.copy(alpha = alpha)
-
+            val x00 = projX[idx00]
+            val y00 = projY[idx00]
             // Latitude ring line
-            drawLine(
-                color = strokeCol,
-                start = p00,
-                end = p01,
-                strokeWidth = 1.35f,
-                cap = StrokeCap.Round
-            )
+            bucketPath.moveTo(x00, y00)
+            bucketPath.lineTo(projX[idx01], projY[idx01])
             // Longitude meridian line
-            drawLine(
-                color = strokeCol,
-                start = p00,
-                end = p10,
-                strokeWidth = 1.25f,
-                cap = StrokeCap.Round
-            )
+            bucketPath.moveTo(x00, y00)
+            bucketPath.lineTo(projX[idx10], projY[idx10])
         }
+    }
+
+    for (b in 0 until SPHERE_DEPTH_BUCKETS) {
+        val bucketNorm = (b + 0.5f) / SPHERE_DEPTH_BUCKETS
+        val depth = (bucketNorm * 2f) - 1f
+        val alpha = (0.42f + (depth * 0.28f) + (frame.midEnergy * 0.22f)).coerceIn(0.18f, 0.95f)
+        val wireColor = samplePalette(palette, (bucketNorm * 0.85f + frame.bassEnergy * 0.15f).coerceIn(0f, 1f))
+        drawPath(
+            path = bucketPaths[b],
+            color = wireColor.copy(alpha = alpha),
+            style = StrokeSphereWire
+        )
     }
 }
 
@@ -415,17 +544,19 @@ private fun DrawScope.drawAuroraPrismaticWaves(
     definition: VisualizerDefinition,
     palette: List<Color>,
     frame: AudioVisualizerSampler.SpectrumFrame,
-    phaseTime: Float
+    phaseTime: Float,
+    cache: VisualizerDrawCache
 ) {
     val ribbons = definition.waveLayers.coerceIn(4, 10)
     val centerY = height * 0.52f
     val bands = frame.bands
+    val path = cache.workPath
 
     for (r in 0 until ribbons) {
         val rNorm = r.toFloat() / (ribbons - 1).coerceAtLeast(1)
         val c = samplePalette(palette, rNorm)
 
-        val path = Path()
+        path.rewind()
         val steps = 64
         for (s in 0..steps) {
             val u = s.toFloat() / steps
@@ -444,13 +575,13 @@ private fun DrawScope.drawAuroraPrismaticWaves(
         drawPath(
             path = path,
             color = c.copy(alpha = 0.28f),
-            style = Stroke(width = 8.0f, cap = StrokeCap.Round)
+            style = StrokeAuroraGlow
         )
         // Sharp core ribbon pass
         drawPath(
             path = path,
             color = c.copy(alpha = 0.88f),
-            style = Stroke(width = 3.2f, cap = StrokeCap.Round)
+            style = StrokeAuroraCore
         )
     }
 
@@ -498,7 +629,7 @@ private fun DrawScope.drawRadialCyberPulsar(
             color = rc.copy(alpha = shockAlpha),
             radius = shockR,
             center = center,
-            style = Stroke(width = 2.2f)
+            style = StrokePulsarRing
         )
     }
 

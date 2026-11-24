@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -289,14 +290,19 @@ class PlaylistRepository(private val context: Context) {
         }
     }
 
+    private val appContext: Context = context.applicationContext
+    private val ioScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
     private val playlistsFile: File
-        get() = File(context.filesDir, FILE_NAME)
+        get() = File(appContext.filesDir, FILE_NAME)
 
     private val _playlists = MutableStateFlow<List<UserPlaylist>>(emptyList())
     val playlists: StateFlow<List<UserPlaylist>> = _playlists.asStateFlow()
 
     init {
-        loadPlaylistsFromDisk()
+        ioScope.launch {
+            loadPlaylistsFromDisk()
+        }
     }
 
     /**

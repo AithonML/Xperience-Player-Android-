@@ -188,7 +188,7 @@ fun NowPlayingSidebar(
     initialTab: NowPlayingSidebarTab = NowPlayingSidebarTab.QUEUE,
     onMoveQueueItem: (fromIndex: Int, toIndex: Int) -> Unit = { _, _ -> },
     onPlayQueueIndex: (Int) -> Unit = {},
-    selectedVisualizer: VisualizerDefinition = VisualizerRepository.BuiltInPresets.first(),
+    selectedVisualizer: VisualizerDefinition = VisualizerRepository.DefaultPreset,
     availableVisualizers: List<VisualizerDefinition> = emptyList(),
     onSelectVisualizer: (VisualizerDefinition) -> Unit = {},
     onImportVisualizer: (String, String?) -> Unit = { _, _ -> },
@@ -211,7 +211,8 @@ fun NowPlayingSidebar(
     onSetAsRingtone: (TrackItem) -> Unit = {},
     castState: CastPlaybackState = CastPlaybackState(),
     castRouteCount: Int = 0,
-    onOpenCastPicker: () -> Unit = onOpenOutputSwitcher
+    onOpenCastPicker: () -> Unit = onOpenOutputSwitcher,
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long> = remember { kotlinx.coroutines.flow.MutableStateFlow(playbackState.currentPositionMs) }
 ) {
     val track = playbackState.currentTrack ?: return
     val context = LocalContext.current
@@ -330,7 +331,6 @@ fun NowPlayingSidebar(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer()
                     .layerBackdrop(sidebarBackdrop)
             ) {
                 SidebarArtworkBackdropStage(
@@ -340,7 +340,7 @@ fun NowPlayingSidebar(
                     isCanvasPaused = activeTab == NowPlayingSidebarTab.LYRICS,
                     heroHeight = heroArtworkHeight,
                     selectedVisualizer = selectedVisualizer,
-                    currentPositionMs = playbackState.currentPositionMs,
+                    positionMsProvider = { playbackPositionMsFlow.value },
                     durationMs = playbackState.durationMs,
                     accentColor = accentColor,
                     appColors = appColors,
@@ -459,7 +459,7 @@ fun NowPlayingSidebar(
 
                 // Squiggly progress bar + Heart like toggle row
                 SidebarSeekAndLikeRow(
-                    currentPositionMs = playbackState.currentPositionMs,
+                    playbackPositionMsFlow = playbackPositionMsFlow,
                     durationMs = playbackState.durationMs,
                     isPlaying = playbackState.isPlaying,
                     isLiked = isLiked,
@@ -540,7 +540,7 @@ fun NowPlayingSidebar(
                             NowPlayingSidebarTab.LYRICS -> {
                                 SynchronizedLyricsView(
                                     lines = lyrics,
-                                    currentPositionMs = playbackState.currentPositionMs,
+                                    playbackPositionMsFlow = playbackPositionMsFlow,
                                     providerName = lyricsProviderName,
                                     accentColor = accentColor,
                                     appColors = appColors,
@@ -674,7 +674,7 @@ private fun SidebarArtworkBackdropStage(
     isCanvasPaused: Boolean,
     heroHeight: Dp,
     selectedVisualizer: VisualizerDefinition,
-    currentPositionMs: Long,
+    positionMsProvider: () -> Long,
     durationMs: Long,
     accentColor: Color,
     appColors: AppThemeColors,
@@ -807,7 +807,7 @@ private fun SidebarArtworkBackdropStage(
         if (selectedVisualizer.renderMode != VisualizerRenderMode.None) {
             GpuMusicVisualizer(
                 definition = selectedVisualizer,
-                currentPositionMs = currentPositionMs,
+                positionMsProvider = positionMsProvider,
                 durationMs = durationMs,
                 isPlaying = isPlaying,
                 currentTrack = track,
@@ -1375,7 +1375,7 @@ private fun SidebarTrackInfoHeader(
 
 @Composable
 private fun SidebarSeekAndLikeRow(
-    currentPositionMs: Long,
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long>,
     durationMs: Long,
     isPlaying: Boolean,
     isLiked: Boolean,
@@ -1400,7 +1400,7 @@ private fun SidebarSeekAndLikeRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         SquigglyProgressBar(
-            currentPositionMs = currentPositionMs,
+            playbackPositionMsFlow = playbackPositionMsFlow,
             durationMs = durationMs,
             isPlaying = isPlaying,
             accentColor = accentColor,

@@ -172,6 +172,7 @@ fun DesktopTopNavBar(
     modifier: Modifier = Modifier,
     isNowPlayingSidebarOpen: Boolean = false,
     onToggleNowPlayingSidebar: () -> Unit = onMiniPlayerClick,
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long>? = null,
 ) {
     val navSearch = LocalNavSearchState.current
     val glassConfig = LocalGlassEffectConfig.current
@@ -371,7 +372,8 @@ fun DesktopTopNavBar(
                                     .height(48.dp),
                                 surfaceModifier = Modifier
                                     .fillMaxSize()
-                                    .then(pillSurfaceModifier)
+                                    .then(pillSurfaceModifier),
+                                playbackPositionMsFlow = playbackPositionMsFlow,
                             )
                         } else {
                             GlassCircleButton(

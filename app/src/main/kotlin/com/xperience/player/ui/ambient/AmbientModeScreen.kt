@@ -44,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -85,6 +86,8 @@ import com.xperience.player.ui.theme.LocalAccentColor
 import com.xperience.player.ui.theme.LocalAppColors
 import com.xperience.player.ui.theme.PlusJakartaSans
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -119,7 +122,8 @@ fun AmbientModeScreen(
     initialHudVisible: Boolean = true,
     hudAutoHideDelayMs: Long = DEFAULT_AMBIENT_HUD_AUTO_HIDE_MS,
     enableSystemUiControl: Boolean = true,
-    enableBurnInProtection: Boolean = true
+    enableBurnInProtection: Boolean = true,
+    playbackPositionMsFlow: StateFlow<Long> = remember { MutableStateFlow(state.playbackState.currentPositionMs) }
 ) {
     // System immersive landscape lock + keep-screen-on with safe teardown
     AmbientImmersiveSystemEffect(enabled = enableSystemUiControl)
@@ -264,7 +268,12 @@ fun AmbientModeScreen(
         }
     }
 
-    // Dedicated LayerBackdrop capturing the live Ambient visual stage so all glass HUD controls refract it
+    // Dedicated LayerBackdrop capturing the live Ambient visual stage so all glass HUD controls refract it.
+    // Non-snapshot BooleanArray ref avoids registering a draw-phase snapshot dependency (matching BackdropFreeze.kt).
+    val hudVisibleRef = remember { booleanArrayOf(hudState.isHudVisible) }
+    SideEffect {
+        hudVisibleRef[0] = hudState.isHudVisible
+    }
     val ambientBackdrop = rememberLayerBackdrop(
         onDraw = {
             drawRect(Color(0xFF0A0C12))
@@ -355,19 +364,18 @@ fun AmbientModeScreen(
             val stageHeight = maxHeight
             val isCompactHeight = stageHeight < 460.dp
 
-            // 1. RICH ATMOSPHERIC BACKDROP LAYER (captured for Liquid Glass HUD refraction)
+            // 1. RICH ATMOSPHERIC BACKDROP LAYER (captured for Liquid Glass HUD refraction; frozen when HUD is hidden)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer()
-                    .layerBackdrop(ambientBackdrop)
+                    .layerBackdrop(ambientBackdrop, frozen = { !hudVisibleRef[0] })
             ) {
                 AmbientBackdropStage(
                     track = track,
                     auroraColors = state.auroraColors,
                     accentColor = animatedAccentColor,
                     isPlaying = state.playbackState.isPlaying,
-                    currentPositionMs = state.playbackState.currentPositionMs,
+                    positionMsProvider = { playbackPositionMsFlow.value },
                     durationMs = state.playbackState.durationMs,
                     activeVisualizer = activeVisualizer,
                     modifier = Modifier.fillMaxSize()
@@ -488,6 +496,7 @@ fun AmbientModeScreen(
                                                     hudController.registerInteraction()
                                                     actions.onOpenLyricsSettings()
                                                 },
+                                                playbackPositionMsFlow = playbackPositionMsFlow,
                                                 modifier = Modifier.fillMaxSize()
                                             )
                                         } else {
@@ -564,6 +573,7 @@ fun AmbientModeScreen(
                 onToggleVisualizer = { hudController.toggleVisualizer() },
                 onToggleCanvasVideo = { hudController.toggleCanvasVideo() },
                 onToggleRemainingTime = { hudController.toggleRemainingTimeDisplay() },
+                playbackPositionMsFlow = playbackPositionMsFlow,
                 modifier = Modifier.fillMaxSize()
             )
         }
