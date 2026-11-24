@@ -489,7 +489,7 @@ private fun LikedHeaderHeartBadge(
     hasLikedSongs: Boolean,
     isDark: Boolean
 ) {
-    val heartScale by if (hasLikedSongs) {
+    val heartScaleState = if (hasLikedSongs) {
         val transition = rememberInfiniteTransition(label = "likedHeaderHeartPulse")
         transition.animateFloat(
             initialValue = 1f,
@@ -504,12 +504,31 @@ private fun LikedHeaderHeartBadge(
         remember { mutableFloatStateOf(1f) }
     }
 
+    val bgBrush = remember(isDark) {
+        Brush.verticalGradient(
+            colors = listOf(
+                HeartRubyTint.copy(alpha = if (isDark) 0.34f else 0.20f),
+                if (isDark) Color(0x45281420) else Color(0x88FFFFFF)
+            )
+        )
+    }
+    val borderBrush = remember(isDark) {
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = if (isDark) 0.55f else 0.85f),
+                HeartRubyTint.copy(alpha = 0.55f),
+                Color.White.copy(alpha = 0.14f)
+            )
+        )
+    }
+
     Box(
         modifier = Modifier
             .size(44.dp)
             .graphicsLayer {
-                scaleX = heartScale
-                scaleY = heartScale
+                val s = heartScaleState.value
+                scaleX = s
+                scaleY = s
             }
             .shadow(
                 elevation = 10.dp,
@@ -518,23 +537,10 @@ private fun LikedHeaderHeartBadge(
                 spotColor = HeartRubyTint.copy(alpha = 0.55f)
             )
             .clip(HeaderEmblemShape)
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        HeartRubyTint.copy(alpha = if (isDark) 0.34f else 0.20f),
-                        if (isDark) Color(0x45281420) else Color(0x88FFFFFF)
-                    )
-                )
-            )
+            .background(bgBrush)
             .border(
                 width = 1.1.dp,
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = if (isDark) 0.55f else 0.85f),
-                        HeartRubyTint.copy(alpha = 0.55f),
-                        Color.White.copy(alpha = 0.14f)
-                    )
-                ),
+                brush = borderBrush,
                 shape = HeaderEmblemShape
             ),
         contentAlignment = Alignment.Center

@@ -159,8 +159,17 @@ fun CanvasArtworkPlayer(
         if (playerHolder.disposed) return@LaunchedEffect
 
         val created = runCatching {
+            val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    /* minBufferMs = */ 2_500,
+                    /* maxBufferMs = */ 8_000,
+                    /* bufferForPlaybackMs = */ 500,
+                    /* bufferForPlaybackAfterRebufferMs = */ 1_000
+                )
+                .build()
             ExoPlayer.Builder(appContext)
                 .setMediaSourceFactory(mediaSourceFactory)
+                .setLoadControl(loadControl)
                 .build()
                 .apply {
                     trackSelectionParameters = trackSelectionParameters

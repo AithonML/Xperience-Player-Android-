@@ -25,6 +25,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -273,17 +274,25 @@ class MediaCatalogService(
     init {
         ytmService.attachAuthManager(authManager)
         ytmService.attachCacheContext(context)
-        val (saved, modified) = loadRecentlyPlayed()
-        if (saved.isNotEmpty()) {
-            synchronized(catalogStateLock) {
-                _recentlyPlayed.addAll(saved)
+        serviceScope.launch {
+            val (saved, modified) = loadRecentlyPlayed()
+            if (saved.isNotEmpty()) {
+                synchronized(catalogStateLock) {
+                    _recentlyPlayed.addAll(saved)
+                }
+                if (modified) {
+                    saveRecentlyPlayed()
+                }
             }
-            if (modified) {
-                saveRecentlyPlayed()
-            }
+            loadPlaybackHistory(seedTracks = saved)
+            updateFeedState()
         }
-        loadPlaybackHistory(seedTracks = saved)
-        updateFeedState()
+    }
+
+    fun release() {
+        enrichJob?.cancel()
+        recFetchJob?.cancel()
+        serviceScope.cancel()
     }
 
     private val _isScanning = MutableStateFlow(false)
@@ -383,18 +392,31 @@ class MediaCatalogService(
             track,
             ytmService.getAtvCounterpartSnapshot()
         ).first
-        val stampedTrack = trackAddedAtStore.stampTrack(cleanTrack)
+        val nowMs = System.currentTimeMillis()
         synchronized(catalogStateLock) {
-            _recentlyPlayed.removeAll { isSameAlbumOrItem(it, stampedTrack) }
-            _recentlyPlayed.add(0, stampedTrack)
+            _recentlyPlayed.removeAll { isSameAlbumOrItem(it, cleanTrack) }
+            _recentlyPlayed.add(0, cleanTrack)
             while (_recentlyPlayed.size > 50) {
                 _recentlyPlayed.removeAt(_recentlyPlayed.lastIndex)
             }
-            recordPlaybackHistoryEventLocked(stampedTrack, System.currentTimeMillis())
+            recordPlaybackHistoryEventLocked(cleanTrack, nowMs)
         }
-        saveRecentlyPlayed()
-        savePlaybackHistory()
         updateFeedState()
+
+        // Offload SharedPreferences / JSON serialization to Dispatchers.IO so track taps never block Main
+        serviceScope.launch(Dispatchers.IO) {
+            val stampedTrack = trackAddedAtStore.stampTrack(cleanTrack)
+            if (stampedTrack.dateAddedMs != cleanTrack.dateAddedMs) {
+                synchronized(catalogStateLock) {
+                    val idx = _recentlyPlayed.indexOfFirst { it.id == cleanTrack.id }
+                    if (idx >= 0) {
+                        _recentlyPlayed[idx] = stampedTrack
+                    }
+                }
+            }
+            saveRecentlyPlayed()
+            savePlaybackHistory()
+        }
 
         // Debounce & asynchronously refresh recommendations based on the updated user listening history
         recFetchJob?.cancel()
@@ -434,6 +456,14 @@ class MediaCatalogService(
             totalPlayCount = updatedCount,
             genreTag = genre
         )
+        if (_playbackHistoryEntries.size > 200) {
+            val overflow = _playbackHistoryEntries.size - 200
+            val oldestKeys = _playbackHistoryEntries.entries
+                .sortedBy { it.value.lastPlayedAtMs }
+                .take(overflow)
+                .map { it.key }
+            oldestKeys.forEach { _playbackHistoryEntries.remove(it) }
+        }
     }
 
     private fun loadPlaybackHistory(seedTracks: List<TrackItem>) {
@@ -1337,7 +1367,7 @@ class MediaCatalogService(
 
     fun enrichLocalArtistAvatars() {
         enrichJob?.cancel()
-        enrichJob = CoroutineScope(Dispatchers.IO).launch {
+        enrichJob = serviceScope.launch {
             val currentArtists = _localArtists.value
             val gate = Semaphore(4)
             for (artist in currentArtists) {

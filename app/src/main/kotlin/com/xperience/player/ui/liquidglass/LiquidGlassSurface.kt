@@ -53,47 +53,60 @@ fun LiquidGlassSurface(
     content: @Composable BoxScope.() -> Unit
 ) {
     val isPressed by interactionSource.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
+    val pressScaleState = animateFloatAsState(
         targetValue = if (isPressed) 0.965f else 1.0f,
         animationSpec = tween(durationMillis = 150),
         label = "glassPressScale"
     )
 
+    val blurRenderEffect = remember(frostBlurRadius) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && frostBlurRadius > 0f) {
+            RenderEffect
+                .createBlurEffect(
+                    frostBlurRadius,
+                    frostBlurRadius,
+                    Shader.TileMode.CLAMP
+                )
+                .asComposeRenderEffect()
+        } else {
+            null
+        }
+    }
+
     // Fresnel Specular Rim Gradient (High specular highlight at top-left, subtle reflection at bottom-right)
-    val specularRimBrush = Brush.linearGradient(
-        colors = listOf(
-            Color(0xCCFFFFFF), // Top-left crisp white reflection
-            Color(0x33A0C8FF), // Upper tangent subtle refraction
-            Color(0x1A80A0C0), // Mid tangent deep dissipation
-            Color(0x24A0C8FF), // Lower tangent subtle bounce
-            Color(0x88FFFFFF)  // Bottom-right rim return reflection
-        ),
-        start = Offset(0f, 0f),
-        end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY)
-    )
+    val specularRimBrush = remember {
+        Brush.linearGradient(
+            colors = listOf(
+                Color(0xCCFFFFFF), // Top-left crisp white reflection
+                Color(0x33A0C8FF), // Upper tangent subtle refraction
+                Color(0x1A80A0C0), // Mid tangent deep dissipation
+                Color(0x24A0C8FF), // Lower tangent subtle bounce
+                Color(0x88FFFFFF)  // Bottom-right rim return reflection
+            ),
+            start = Offset(0f, 0f),
+            end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY)
+        )
+    }
 
     // Inner Meniscus Bevel Gradient for organic 3D glass look
-    val innerBevelBrush = Brush.verticalGradient(
-        colors = listOf(
-            Color(0x28FFFFFF),
-            Color(0x00FFFFFF),
-            Color(0x18000000)
+    val innerBevelBrush = remember {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color(0x28FFFFFF),
+                Color(0x00FFFFFF),
+                Color(0x18000000)
+            )
         )
-    )
+    }
 
     Box(
         modifier = modifier
             .graphicsLayer {
-                scaleX = pressScale
-                scaleY = pressScale
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && frostBlurRadius > 0f) {
-                    renderEffect = RenderEffect
-                        .createBlurEffect(
-                            frostBlurRadius,
-                            frostBlurRadius,
-                            Shader.TileMode.CLAMP
-                        )
-                        .asComposeRenderEffect()
+                val s = pressScaleState.value
+                scaleX = s
+                scaleY = s
+                if (blurRenderEffect != null) {
+                    renderEffect = blurRenderEffect
                 }
             }
             .clip(shape)

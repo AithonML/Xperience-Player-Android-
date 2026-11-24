@@ -133,10 +133,11 @@ object MediaNetworkClients {
         synchronized(imageLoaderLock) {
             imageLoader?.let { return it }
             val appContext = context.applicationContext
-            val diskCacheDir = File(appContext.cacheDir, "coil_image_cache").apply { mkdirs() }
             val loader = ImageLoader.Builder(appContext)
                 .okHttpClient(sharedOkHttpClient)
                 .respectCacheHeaders(false)
+                .allowRgb565(true)
+                .precision(coil.size.Precision.INEXACT)
                 .memoryCache {
                     MemoryCache.Builder(appContext)
                         .maxSizePercent(0.20)
@@ -144,13 +145,12 @@ object MediaNetworkClients {
                 }
                 .diskCache {
                     DiskCache.Builder()
-                        .directory(diskCacheDir)
+                        .directory(File(appContext.cacheDir, "coil_image_cache"))
                         .maxSizeBytes(MAX_IMAGE_DISK_CACHE_BYTES)
                         .build()
                 }
                 .build()
             imageLoader = loader
-            runCatching { Coil.setImageLoader(loader) }
             return loader
         }
     }
@@ -158,11 +158,12 @@ object MediaNetworkClients {
     /**
      * Enqueues a background image decode/disk-cache fill on the shared [ImageLoader].
      */
-    fun prefetchImage(context: Context, imageUri: String?) {
+    fun prefetchImage(context: Context, imageUri: String?, targetSizePx: Int = 512) {
         if (imageUri.isNullOrBlank()) return
         val appContext = context.applicationContext
         val request = ImageRequest.Builder(appContext)
             .data(imageUri)
+            .size(targetSizePx)
             .build()
         getImageLoader(appContext).enqueue(request)
     }

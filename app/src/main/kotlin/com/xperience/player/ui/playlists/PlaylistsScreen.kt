@@ -691,7 +691,8 @@ private fun PlaylistsGridContent(
         if (suggestedPlaylists.isNotEmpty()) {
             item(
                 key = "suggested_smart_playlists_section",
-                span = { GridItemSpan(maxLineSpan) }
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "suggested_banner"
             ) {
                 SuggestedSmartPlaylistsBannerSection(
                     suggestedPlaylists = suggestedPlaylists,
@@ -706,7 +707,8 @@ private fun PlaylistsGridContent(
 
             item(
                 key = "saved_playlists_section_header",
-                span = { GridItemSpan(maxLineSpan) }
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "section_header"
             ) {
                 Row(
                     modifier = Modifier
@@ -736,7 +738,8 @@ private fun PlaylistsGridContent(
         if (playlists.isEmpty()) {
             item(
                 key = "saved_playlists_empty_inline",
-                span = { GridItemSpan(maxLineSpan) }
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "empty_state"
             ) {
                 PlaylistsEmptyState(
                     accentColor = accentColor,
@@ -749,7 +752,8 @@ private fun PlaylistsGridContent(
         } else {
             itemsIndexed(
                 items = playlists,
-                key = { _, playlist -> playlist.id }
+                key = { _, playlist -> playlist.id },
+                contentType = { _, _ -> "playlist_grid_card" }
             ) { index, playlist ->
                 PlaylistGridCard(
                     playlist = playlist,
@@ -855,7 +859,8 @@ private fun SuggestedSmartPlaylistsBannerSection(
         ) {
             items(
                 items = suggestedPlaylists,
-                key = { it.id }
+                key = { it.id },
+                contentType = { "suggested_playlist_card" }
             ) { suggestion ->
                 val isSaved = savedTitles.contains(suggestion.title.trim().lowercase())
                 val isSelected = selectedPlaylistId == suggestion.id

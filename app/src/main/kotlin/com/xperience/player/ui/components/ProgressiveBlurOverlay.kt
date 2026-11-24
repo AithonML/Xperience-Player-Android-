@@ -2,7 +2,10 @@ package com.xperience.player.ui.components
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.BlurredEdgeTreatment
@@ -14,19 +17,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.xperience.player.service.MediaNetworkClients
 
 /**
  * Reusable GPU-accelerated progressive backdrop-blur scrim for API 33+ (`minSdk = 33`).
  *
- * Renders [artworkModel] (`String` URI, `Int` drawable resource, `Uri`, etc.) inside an
- * offscreen graphics layer blurred with [BlurredEdgeTreatment.Rectangle] (clamped edges), masks the blurred copy
- * with a vertical [BlendMode.DstIn] gradient starting at [blurStartFraction] so blur intensity
- * smoothly increases downward, and layers a [tintColor] vertical gradient veil on top for crisp
- * bottom typography. When [artworkModel] is null/blank, gracefully renders only the smooth scrim.
+ * Renders a downsampled (96x96) copy of [artworkModel] scoped to only the bottom blur band
+ * `(1f - blurStartFraction)` inside an offscreen graphics layer blurred with
+ * [BlurredEdgeTreatment.Rectangle], masks it smoothly from 0f to 1f with [BlendMode.DstIn],
+ * and layers a [tintColor] vertical gradient veil on top for crisp bottom typography.
  */
 @Composable
 fun ProgressiveArtworkBlurScrim(
@@ -39,8 +44,7 @@ fun ProgressiveArtworkBlurScrim(
     scrimBottomAlpha: Float = 0.72f
 ) {
     val start = blurStartFraction.coerceIn(0.0f, 0.94f)
-    val midStop = if (start < 0.70f) 0.72f else (start + (1f - start) * 0.55f).coerceIn(start + 0.02f, 0.98f)
-    val earlyStop = (start + (midStop - start) * 0.45f).coerceIn(start, midStop)
+    val blurBandFraction = (1f - start).coerceIn(0.15f, 1f)
 
     val topAlpha = scrimTopAlpha.coerceIn(0f, 1f)
     val bottomAlpha = scrimBottomAlpha.coerceIn(0f, 1f)
@@ -55,22 +59,38 @@ fun ProgressiveArtworkBlurScrim(
         else -> true
     }
     val safeBlurRadius = blurRadius.coerceAtLeast(0.dp)
+    val appContext = LocalContext.current.applicationContext
+    val sharedImageLoader = remember(appContext) {
+        MediaNetworkClients.getImageLoader(appContext)
+    }
 
     Box(modifier = modifier) {
         if (hasValidArtwork && safeBlurRadius > 0.dp) {
+            val downsampledRequest = remember(artworkModel, appContext) {
+                if (artworkModel is Int) {
+                    null
+                } else {
+                    ImageRequest.Builder(appContext)
+                        .data(artworkModel)
+                        .size(96, 96)
+                        .build()
+                }
+            }
+
             Box(
                 modifier = Modifier
-                    .matchParentSize()
+                    .fillMaxWidth()
+                    .fillMaxHeight(blurBandFraction)
+                    .align(Alignment.BottomCenter)
                     .graphicsLayer {
                         compositingStrategy = CompositingStrategy.Offscreen
                     }
                     .drawWithCache {
                         val maskBrush = Brush.verticalGradient(
-                            0f to Color.Transparent,
-                            start to Color.Transparent,
-                            earlyStop to Color.Black.copy(alpha = 0.24f),
-                            midStop to Color.Black.copy(alpha = 0.75f),
-                            1f to Color.Black
+                            0.00f to Color.Transparent,
+                            0.32f to Color.Black.copy(alpha = 0.24f),
+                            0.68f to Color.Black.copy(alpha = 0.75f),
+                            1.00f to Color.Black
                         )
                         onDrawWithContent {
                             drawContent()
@@ -90,15 +110,16 @@ fun ProgressiveArtworkBlurScrim(
                         painter = painterResource(id = artworkModel),
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
-                        alignment = Alignment.Center,
+                        alignment = Alignment.BottomCenter,
                         modifier = blurModifier
                     )
                 } else {
                     AsyncImage(
-                        model = artworkModel,
+                        model = downsampledRequest,
+                        imageLoader = sharedImageLoader,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
-                        alignment = Alignment.Center,
+                        alignment = Alignment.BottomCenter,
                         modifier = blurModifier
                     )
                 }

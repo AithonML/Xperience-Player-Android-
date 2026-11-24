@@ -92,6 +92,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -160,7 +161,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     val trackForRingtoneEditor: StateFlow<TrackItem?> = _trackForRingtoneEditor.asStateFlow()
 
     private var widgetDeepLinkJob: Job? = null
-    val favoritesRepository = FavoritesRepository(application)
+    val favoritesRepository = FavoritesRepository.getInstance(application)
     val likedTracks: StateFlow<List<TrackItem>> = favoritesRepository.likedTracks
     val likedTrackIds: StateFlow<Set<String>> = favoritesRepository.likedTrackIds
 
@@ -234,6 +235,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             local
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, audioPlayerService.playbackState.value)
+
+    val playbackPositionMs: StateFlow<Long> = combine(
+        audioPlayerService.playbackPositionMs,
+        castController.castState
+    ) { localPos, cast ->
+        if (cast.isConnected) cast.positionMs else localPos
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), audioPlayerService.playbackPositionMs.value)
+
+    private val trackPlayedHook: (TrackItem) -> Unit = { track ->
+        catalogService.recordTrackPlayed(track)
+    }
+    private val similarTracksFallbackHook: (List<TrackItem>, Set<String>) -> List<TrackItem> =
+        ::buildOfflineSimilarTracksFallback
+    private val widgetFavoriteToggleHook: (String, TrackItem?) -> Boolean? = { trackId, fallback ->
+        val wasLiked = favoritesRepository.likedTrackIds.value.contains(trackId)
+        toggleFavorite(trackId, fallback)
+        !wasLiked
+    }
+    private val widgetRefreshRecommendationsHook: () -> Unit = {
+        refreshHomeFeed()
+    }
 
     private val _isInitialHomeReady = MutableStateFlow(false)
     val isInitialHomeReady: StateFlow<Boolean> = _isInitialHomeReady.asStateFlow()
@@ -657,25 +679,29 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         refreshFolders()
         _recentSearches.value = catalogService.getRecentSearches()
 
-        audioPlayerService.onTrackPlayed = { track ->
-            catalogService.recordTrackPlayed(track)
-        }
-        audioPlayerService.fallbackSimilarTracksProvider = ::buildOfflineSimilarTracksFallback
+        audioPlayerService.onTrackPlayed = trackPlayedHook
+        audioPlayerService.fallbackSimilarTracksProvider = similarTracksFallbackHook
 
+        // Mark home ready immediately after local/cached hydration without blocking splash on 18+ network requests
         viewModelScope.launch {
-            try {
-                catalogService.updateLikedSeeds(favoritesRepository.likedTracks.value)
+            catalogService.updateLikedSeeds(favoritesRepository.likedTracks.value)
+            val initJob = launch {
                 catalogService.initializeCatalog()
-            } finally {
-                _isInitialHomeReady.value = true
             }
+            kotlinx.coroutines.withTimeoutOrNull(350L) {
+                initJob.join()
+            }
+            _isInitialHomeReady.value = true
+            initJob.join()
+            // Defer secondary recommendations until after initial home render
             refreshLikedRecommendations()
-            loadMoodsAndGenres()
         }
 
         // Observe track changes to dynamically extract prominent album artwork colors & Aurora palette
         viewModelScope.launch {
-            playbackState.collect { state ->
+            playbackState
+                .distinctUntilChangedBy { it.currentTrack?.id }
+                .collect { state ->
                 val track = state.currentTrack
                 if (track != null) {
                     if (track.id != lastArtworkTrackId) {
@@ -727,7 +753,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
         // Observe track changes to automatically resolve synchronized lyrics and motion canvas
         viewModelScope.launch {
-            playbackState.collect { state ->
+            playbackState
+                .distinctUntilChangedBy { it.currentTrack?.id }
+                .collect { state ->
                 val track = state.currentTrack
                 if (track != null) {
                     if (track.id != lastLyricsTrackId) {
@@ -799,7 +827,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 currentTrack = ps.currentTrack,
                 queue = ps.queue,
                 currentQueueIndex = ps.currentQueueIndex,
-                positionMs = ps.currentPositionMs,
+                positionMs = localPlayer.playbackPositionMs.value,
                 isPlaying = ps.isPlaying,
                 repeatMode = ps.repeatMode,
                 isShuffleEnabled = ps.isShuffleEnabled
@@ -835,14 +863,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // Live Home Screen Widget synchronization (playback + curated playlist recommendations)
-        WidgetSyncBridge.onFavoriteToggleRequested = { trackId, fallback ->
-            val wasLiked = favoritesRepository.likedTrackIds.value.contains(trackId)
-            toggleFavorite(trackId, fallback)
-            !wasLiked
-        }
-        WidgetSyncBridge.onRefreshRecommendationsRequested = {
-            refreshHomeFeed()
-        }
+        WidgetSyncBridge.onFavoriteToggleRequested = widgetFavoriteToggleHook
+        WidgetSyncBridge.onRefreshRecommendationsRequested = widgetRefreshRecommendationsHook
 
         viewModelScope.launch(Dispatchers.IO) {
             combine(
@@ -3040,8 +3062,20 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         artistAmbientJob?.cancel()
         artistVideoJob?.cancel()
         widgetDeepLinkJob?.cancel()
-        WidgetSyncBridge.onFavoriteToggleRequested = null
-        WidgetSyncBridge.onRefreshRecommendationsRequested = null
+        if (audioPlayerService.onTrackPlayed === trackPlayedHook) {
+            audioPlayerService.onTrackPlayed = null
+        }
+        if (audioPlayerService.fallbackSimilarTracksProvider === similarTracksFallbackHook) {
+            audioPlayerService.fallbackSimilarTracksProvider = null
+        }
+        if (WidgetSyncBridge.onFavoriteToggleRequested === widgetFavoriteToggleHook) {
+            WidgetSyncBridge.onFavoriteToggleRequested = null
+        }
+        if (WidgetSyncBridge.onRefreshRecommendationsRequested === widgetRefreshRecommendationsHook) {
+            WidgetSyncBridge.onRefreshRecommendationsRequested = null
+        }
+        catalogService.release()
+        musicDownloadService.release()
         audioOutputHelper.release()
     }
 }

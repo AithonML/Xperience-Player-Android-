@@ -415,7 +415,8 @@ fun ImportYouTubePlaylistsSheet(
                     ) {
                         items(
                             items = libraryPlaylists,
-                            key = { it.playlistId }
+                            key = { it.playlistId },
+                            contentType = { "ytm_import_playlist" }
                         ) { playlist ->
                             val isSelected = playlist.playlistId in selectedIds
                             val isAlreadyImported = PlaylistRepository.normalizeYouTubePlaylistId(

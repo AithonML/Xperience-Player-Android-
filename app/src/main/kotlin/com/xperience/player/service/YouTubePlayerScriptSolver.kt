@@ -9,7 +9,12 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -105,6 +110,7 @@ class AndroidWebViewPlayerScriptSolver(
     private val appContext: Context = context.applicationContext ?: context
     private val loadMutex = Mutex()
     private val evalMutex = Mutex()
+    private val idleScope = CoroutineScope(SupervisorJob() + ioDispatcher)
 
     @Volatile private var loadedVersion: String? = null
     @Volatile private var cachedSts: Int? = null
@@ -112,6 +118,7 @@ class AndroidWebViewPlayerScriptSolver(
     @Volatile private var hookedJsBytes: ByteArray? = null
     @Volatile private var webView: WebView? = null
     @Volatile private var isJsReady: Boolean = false
+    @Volatile private var idleEvictionJob: Job? = null
 
     companion object {
         private const val TAG = "YtmScriptSolver"
@@ -121,10 +128,11 @@ class AndroidWebViewPlayerScriptSolver(
         private const val PLAYER_VERSION_TTL_MS = 6L * 60L * 60L * 1000L
         private const val LOAD_TIMEOUT_MS = 10_000L
         private const val EVAL_TIMEOUT_MS = 3_000L
+        private const val IDLE_EVICTION_MS = 3L * 60L * 1000L
     }
 
     override suspend fun getSignatureTimestamp(): Int? {
-        ensurePlayerMetadataLoaded()
+        ensurePlayerMetadataLoaded(requireHookedBytes = false)
         return cachedSts
     }
 
@@ -137,6 +145,7 @@ class AndroidWebViewPlayerScriptSolver(
             return if (signature.isBlank()) cleanUrl else null
         }
 
+        scheduleIdleEviction()
         return evalMutex.withLock {
             withTimeoutOrNull(EVAL_TIMEOUT_MS) {
                 withContext(mainDispatcher) {
@@ -156,18 +165,54 @@ class AndroidWebViewPlayerScriptSolver(
         }
     }
 
-    private suspend fun ensurePlayerMetadataLoaded(): Boolean = withContext(ioDispatcher) {
+    private fun scheduleIdleEviction() {
+        idleEvictionJob?.cancel()
+        idleEvictionJob = idleScope.launch {
+            delay(IDLE_EVICTION_MS)
+            evictWebView()
+        }
+    }
+
+    private suspend fun evictWebView() {
+        loadMutex.withLock {
+            evalMutex.withLock {
+                destroyWebViewOnMain()
+                isJsReady = false
+                hookedJsBytes = null
+                Log.d(TAG, "Evicted idle headless player script WebView")
+            }
+        }
+    }
+
+    private suspend fun destroyWebViewOnMain() {
+        withContext(mainDispatcher) {
+            runCatching {
+                webView?.stopLoading()
+                webView?.loadUrl("about:blank")
+                webView?.destroy()
+            }
+            webView = null
+        }
+    }
+
+    private suspend fun ensurePlayerMetadataLoaded(requireHookedBytes: Boolean): Boolean = withContext(ioDispatcher) {
         val now = clockMs()
-        if (hookedJsBytes != null && cachedSts != null && now - lastVersionCheckMs < PLAYER_VERSION_TTL_MS) {
+        val hasMetadata = cachedSts != null && now - lastVersionCheckMs < PLAYER_VERSION_TTL_MS
+        if (hasMetadata && (!requireHookedBytes || hookedJsBytes != null || (isJsReady && webView != null))) {
             return@withContext true
         }
         loadMutex.withLock {
             val currentNow = clockMs()
-            if (hookedJsBytes != null && cachedSts != null && currentNow - lastVersionCheckMs < PLAYER_VERSION_TTL_MS) {
+            val lockedHasMetadata = cachedSts != null && currentNow - lastVersionCheckMs < PLAYER_VERSION_TTL_MS
+            if (lockedHasMetadata && (!requireHookedBytes || hookedJsBytes != null || (isJsReady && webView != null))) {
                 return@withContext true
             }
-            val playerVer = fetchPlayerVersion() ?: loadedVersion ?: return@withContext hookedJsBytes != null
-            if (playerVer == loadedVersion && hookedJsBytes != null && cachedSts != null) {
+            val playerVer = if (lockedHasMetadata && loadedVersion != null) {
+                loadedVersion!!
+            } else {
+                fetchPlayerVersion() ?: loadedVersion ?: return@withContext hookedJsBytes != null
+            }
+            if (playerVer == loadedVersion && cachedSts != null && (!requireHookedBytes || hookedJsBytes != null || (isJsReady && webView != null))) {
                 lastVersionCheckMs = currentNow
                 return@withContext true
             }
@@ -185,18 +230,22 @@ class AndroidWebViewPlayerScriptSolver(
                 return@withContext false
             }
 
+            val versionChanged = playerVer != loadedVersion
             hookedJsBytes = hooked.toByteArray(Charsets.UTF_8)
             cachedSts = sts
             loadedVersion = playerVer
             lastVersionCheckMs = currentNow
-            isJsReady = false
+            if (versionChanged) {
+                isJsReady = false
+            }
             Log.d(TAG, "Loaded YTM player script $playerVer (sts=$sts, fn=$sigFnName)")
             true
         }
     }
 
     private suspend fun ensureWebViewReady(): Boolean {
-        if (!ensurePlayerMetadataLoaded()) return false
+        if (isJsReady && webView != null) return true
+        if (!ensurePlayerMetadataLoaded(requireHookedBytes = true)) return false
         if (isJsReady && webView != null) return true
 
         return loadMutex.withLock {
@@ -204,9 +253,16 @@ class AndroidWebViewPlayerScriptSolver(
             val jsBytes = hookedJsBytes ?: return@withLock false
             val loaded = withTimeoutOrNull(LOAD_TIMEOUT_MS) {
                 loadScriptInWebView(jsBytes)
-            } ?: false
-            isJsReady = loaded
-            loaded
+            }
+            if (loaded == true) {
+                isJsReady = true
+                hookedJsBytes = null
+                true
+            } else {
+                isJsReady = false
+                destroyWebViewOnMain()
+                false
+            }
         }
     }
 

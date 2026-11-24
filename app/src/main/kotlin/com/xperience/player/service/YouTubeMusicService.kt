@@ -122,11 +122,11 @@ class YouTubeMusicService(
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val cache = ConcurrentHashMap<String, CatalogQueryResult>()
-    private val streamCache = ConcurrentHashMap<String, ResolvedAudioStream>()
-    private val videoStreamCache = ConcurrentHashMap<String, ResolvedMusicVideo>()
-    private val omvCounterpartCache = ConcurrentHashMap<String, String>()
-    private val atvCounterpartCache = ConcurrentHashMap<String, String>()
+    private val cache = BoundedLruMap<String, CatalogQueryResult>(64)
+    private val streamCache = BoundedLruMap<String, ResolvedAudioStream>(128)
+    private val videoStreamCache = BoundedLruMap<String, ResolvedMusicVideo>(64)
+    private val omvCounterpartCache = BoundedLruMap<String, String>(512)
+    private val atvCounterpartCache = BoundedLruMap<String, String>(2000)
     private val atvCacheLock = Any()
     @Volatile private var atvCounterpartCacheFile: File? = atvCacheFileOverride
     @Volatile private var audioCacheDir: File? = audioCacheDirOverride
@@ -156,12 +156,23 @@ class YouTubeMusicService(
                 clockMs = clockMs
             )
         }
-        ensureAtvCounterpartCacheLoaded()
+        if (!atvCacheLoaded) {
+            serviceScope.launch(Dispatchers.IO) {
+                ensureAtvCounterpartCacheLoaded()
+            }
+        }
     }
 
     fun getAtvCounterpartSnapshot(): Map<String, String> {
-        ensureAtvCounterpartCacheLoaded()
-        return atvCounterpartCache.toMap()
+        if (!atvCacheLoaded) {
+            val isMainThread = runCatching {
+                android.os.Looper.myLooper() == android.os.Looper.getMainLooper()
+            }.getOrDefault(false)
+            if (!isMainThread) {
+                ensureAtvCounterpartCacheLoaded()
+            }
+        }
+        return atvCounterpartCache.snapshot()
     }
 
     private fun ensureAtvCounterpartCacheLoaded() {
@@ -189,7 +200,7 @@ class YouTubeMusicService(
         runCatching {
             file.parentFile?.mkdirs()
             val json = JSONObject()
-            atvCounterpartCache.forEach { (k, v) -> json.put(k, v) }
+            atvCounterpartCache.entriesSnapshot().forEach { (k, v) -> json.put(k, v) }
             val tmp = File(file.parentFile, "${file.name}.tmp")
             tmp.writeText(json.toString())
             if (!tmp.renameTo(file)) {
@@ -200,13 +211,13 @@ class YouTubeMusicService(
             safeLog("Failed to persist ATV counterpart cache", it)
         }
     }
-    private val searchFilterCache = ConcurrentHashMap<String, SearchResultData>()
-    private val artistAvatarCache = ConcurrentHashMap<String, String>()
+    private val searchFilterCache = BoundedLruMap<String, SearchResultData>(64)
+    private val artistAvatarCache = BoundedLruMap<String, String>(512)
     private val inFlightArtistAvatars = ConcurrentHashMap<String, Deferred<String?>>()
 
     private val artistProfileCache = ConcurrentHashMap<String, TimedCacheEntry<ArtistDetailProfile>>()
     private val albumDetailCache = ConcurrentHashMap<String, TimedCacheEntry<AlbumDetailProfile>>()
-    private val moodCategoryDetailCache = ConcurrentHashMap<String, TimedCacheEntry<YtmMoodCategoryDetail>>()
+    private val moodCategoryDetailCache = BoundedLruMap<String, TimedCacheEntry<YtmMoodCategoryDetail>>(32)
     @Volatile private var moodsAndGenresCache: TimedCacheEntry<YtmMoodsAndGenresFeed>? = null
     private val inFlightArtistProfiles = ConcurrentHashMap<String, Deferred<ArtistDetailProfile?>>()
     private val inFlightAlbumDetails = ConcurrentHashMap<String, Deferred<AlbumDetailProfile?>>()
@@ -221,6 +232,7 @@ class YouTubeMusicService(
 
     companion object {
         private const val TAG = "YouTubeMusicService"
+        private const val MAX_AUDIO_CACHE_BYTES = 400L * 1024L * 1024L // 400 MB LRU cap
         private const val SEARCH_URL = "https://music.youtube.com/youtubei/v1/search?prettyPrint=false"
         private const val BROWSE_URL = "https://music.youtube.com/youtubei/v1/browse?prettyPrint=false"
         private const val NEXT_URL = "https://music.youtube.com/youtubei/v1/next?prettyPrint=false"
@@ -234,7 +246,9 @@ class YouTubeMusicService(
         private val TRACK_CREDITS_BROWSE_ID_REGEX = Regex("""^MPTC([A-Za-z0-9_-]{11})$""")
         private val VIDEO_ID_REGEX = Regex("""^[A-Za-z0-9_-]{11}$""")
         private val YEAR_REGEX = Regex("""^\d{4}$""")
+        private val YEAR_IN_TEXT_REGEX = Regex("""\b(19\d\d|20\d\d)\b""")
         private val DURATION_REGEX = Regex("""^\d{1,2}:\d{2}(:\d{2})?$""")
+        private val DURATION_IN_TEXT_REGEX = Regex("""\b(\d{1,2}:\d{2}(?::\d{2})?)\b""")
         private val VISTAS_COUNT_REGEX = Regex("""\b\d+(?:[.,]\d+)?\s*[KMBkmb]?\s*vistas\b""", RegexOption.IGNORE_CASE)
         private val VIDEO_TITLE_TAG_REGEX = Regex(
             """[\(\[]\s*(?:official\s*(?:music\s*)?video|official\s*lyric\s*video|lyric\s*video|music\s*video|video\s*oficial|audio\s*oficial|official\s*audio|official\s*hd\s*video|4k\s*remaster(?:ed)?|hd|4k|lyrics?|sub\.?\s*espa[nñ]ol)\s*[\)\]]""",
@@ -242,6 +256,20 @@ class YouTubeMusicService(
         )
         private val NON_ALPHANUMERIC_SPACE_REGEX = Regex("""[^\p{L}\p{N}\s]+""")
         private val WHITESPACE_REGEX = Regex("""\s+""")
+        private val CLEN_PARAM_REGEX = Regex("""[?&]clen=(\d+)""")
+        private val TOPIC_SUFFIX_REGEX = Regex("""\s*-\s*Topic$""", RegexOption.IGNORE_CASE)
+        private val VEVO_SUFFIX_REGEX = Regex("""VEVO$""", RegexOption.IGNORE_CASE)
+        private val OFFICIAL_SUFFIX_REGEX = Regex("""\s+Official$""", RegexOption.IGNORE_CASE)
+        private val COMBINING_DIACRITICS_REGEX = Regex("""\p{M}+""")
+        private val PUNCTUATION_ONLY_REGEX = Regex("""^[,&/|•·\-–—+]+$""")
+        private val THUMB_WH_REGEX = Regex("=w\\d+-h\\d+")
+        private val THUMB_S_REGEX = Regex("=s\\d+")
+        private val THUMB_WH_TAIL_REGEX = Regex("=w\\d+-h\\d+.*")
+        private val THUMB_S_TAIL_REGEX = Regex("=s\\d+.*")
+        private val BULLET_YEAR_TAIL_REGEX = Regex("""•\s*(19\d\d|20\d\d).*""")
+        private val WIKIPEDIA_SUFFIX_REGEX = Regex("\\s*From Wikipedia.*", RegexOption.IGNORE_CASE)
+        private val NON_NUMERIC_UNIT_REGEX = Regex("[^0-9.KkMmBb]")
+        private val ISO_YEAR_MONTH_REGEX = Regex("""\b(?:19\d\d|20\d\d)[-/](0?[1-9]|1[0-2])\b""")
 
         fun getAtvCounterpartCacheFile(context: Context): File {
             val appContext = context.applicationContext ?: context
@@ -939,6 +967,7 @@ class YouTubeMusicService(
 
         // 1. Instant Cache: Check if already downloaded to disk (> 50 KB)
         if (targetFile.exists() && targetFile.length() > 50_000) {
+            runCatching { targetFile.setLastModified(clockMs()) }
             safeLog("Using cached audio track: ${targetFile.absolutePath} (${targetFile.length()} bytes)")
             return@withContext targetFile
         }
@@ -977,6 +1006,8 @@ class YouTubeMusicService(
                         targetFile.delete()
                     }
                     tempFile.renameTo(targetFile)
+                    runCatching { targetFile.setLastModified(clockMs()) }
+                    trimAudioCacheIfNeeded(cacheDir, excludeFileName = targetFile.name)
                     safeLog("Cached YouTube Music audio for '$cleanVideoId' at '${targetFile.absolutePath}' (${targetFile.length()} bytes)")
                     return@withContext targetFile
                 }
@@ -1000,6 +1031,28 @@ class YouTubeMusicService(
         }
 
         null
+    }
+
+    internal fun trimAudioCacheIfNeeded(
+        cacheDir: File,
+        maxBytes: Long = MAX_AUDIO_CACHE_BYTES,
+        excludeFileName: String? = null
+    ) {
+        runCatching {
+            val files = cacheDir.listFiles()?.filter { it.isFile } ?: return
+            var totalBytes = files.sumOf { it.length() }
+            if (totalBytes <= maxBytes) return
+            val sortedOldestFirst = files
+                .filter { it.name != excludeFileName }
+                .sortedBy { it.lastModified() }
+            for (file in sortedOldestFirst) {
+                if (totalBytes <= maxBytes) break
+                val len = file.length()
+                if (file.delete()) {
+                    totalBytes -= len
+                }
+            }
+        }
     }
 
     private fun buildStreamDownloadRequest(url: String, resolved: ResolvedAudioStream): Request {
@@ -1375,9 +1428,9 @@ class YouTubeMusicService(
     internal fun cleanAuthorForAtvSearch(raw: String): String {
         if (raw.isBlank()) return ""
         return raw
-            .replace(Regex("""\s*-\s*Topic$""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""VEVO$""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""\s+Official$""", RegexOption.IGNORE_CASE), "")
+            .replace(TOPIC_SUFFIX_REGEX, "")
+            .replace(VEVO_SUFFIX_REGEX, "")
+            .replace(OFFICIAL_SUFFIX_REGEX, "")
             .replace(WHITESPACE_REGEX, " ")
             .trim()
     }
@@ -1385,7 +1438,7 @@ class YouTubeMusicService(
     internal fun normalizeMatchText(raw: String): String {
         if (raw.isBlank()) return ""
         val decomposed = java.text.Normalizer.normalize(raw, java.text.Normalizer.Form.NFD)
-        val withoutAccents = decomposed.replace(Regex("""\p{M}+"""), "")
+        val withoutAccents = decomposed.replace(COMBINING_DIACRITICS_REGEX, "")
         return withoutAccents
             .lowercase(java.util.Locale.ROOT)
             .replace(NON_ALPHANUMERIC_SPACE_REGEX, " ")
@@ -1543,9 +1596,9 @@ class YouTubeMusicService(
         if (VIDEO_ID_REGEX.matches(rawId)) {
             ensureAtvCounterpartCacheLoaded()
             // Reverse lookup in atvCounterpartCache: omv -> atv
-            atvCounterpartCache.entries.firstOrNull { (k, v) ->
+            atvCounterpartCache.entriesSnapshot().firstOrNull { (k, v) ->
                 k != v && v == rawId && VIDEO_ID_REGEX.matches(k)
-            }?.key?.let { candidateVideoIds.add(it) }
+            }?.first?.let { candidateVideoIds.add(it) }
 
             // Native YouTube Music /next counterpart lookup (OMV paired directly with ATV track)
             findNativeVideoCounterpartId(rawId)?.let { candidateVideoIds.add(it) }
@@ -2786,8 +2839,8 @@ class YouTubeMusicService(
         val trimmed = rawUrl?.trim()?.takeIf { it.isNotBlank() } ?: return null
         val withScheme = if (trimmed.startsWith("//")) "https:$trimmed" else trimmed
         return withScheme
-            .replace(Regex("=w\\d+-h\\d+"), "=w$targetSizePx-h$targetSizePx")
-            .replace(Regex("=s\\d+"), "=s$targetSizePx")
+            .replace(THUMB_WH_REGEX, "=w$targetSizePx-h$targetSizePx")
+            .replace(THUMB_S_REGEX, "=s$targetSizePx")
     }
 
     private fun extractThumbUrlListFromRenderer(renderer: JSONObject): JSONArray? {
@@ -2930,7 +2983,7 @@ class YouTubeMusicService(
                 if (t.equals("Album", ignoreCase = true) || t.equals("Álbum", ignoreCase = true) ||
                     t.equals("Single", ignoreCase = true) || t.equals("EP", ignoreCase = true)) {
                     type = t
-                } else if (Regex("""\b(19\d\d|20\d\d)\b""").matches(t)) {
+                } else if (YEAR_IN_TEXT_REGEX.matches(t)) {
                     year = t.toIntOrNull() ?: 2024
                 } else if (artist == "Unknown Artist") {
                     artist = t
@@ -3497,7 +3550,7 @@ class YouTubeMusicService(
 
                 val subObj = headerRenderer.optJSONObject("subtitle")
                 val sub = extractAllRunsText(subObj)
-                val y = Regex("""\b(19\d\d|20\d\d)\b""").find(sub)?.value?.toIntOrNull()
+                val y = YEAR_IN_TEXT_REGEX.find(sub)?.value?.toIntOrNull()
                 if (y != null) resolvedYear = y
 
                 val secSubObj = headerRenderer.optJSONObject("secondSubtitle")
@@ -3761,14 +3814,14 @@ class YouTubeMusicService(
                                 if (thumbObj != null && thumbObj.length() > 0) {
                                     cover = thumbObj.getJSONObject(thumbObj.length() - 1).optString("url")
                                     if (cover.isNotBlank()) {
-                                        cover = cover.replace(Regex("=w\\d+-h\\d+.*"), "=w540-h540-p-l90-rj")
-                                            .replace(Regex("=s\\d+.*"), "=s540-c-k-c0x00ffffff-no-rj-mo")
+                                        cover = cover.replace(THUMB_WH_TAIL_REGEX, "=w540-h540-p-l90-rj")
+                                            .replace(THUMB_S_TAIL_REGEX, "=s540-c-k-c0x00ffffff-no-rj-mo")
                                     }
                                 }
 
-                                val year = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value?.toIntOrNull() ?: 2024
-                                val albArtist = if (subtitle.isNotBlank() && !subtitle.matches(Regex("""\b(19\d\d|20\d\d)\b"""))) {
-                                    subtitle.replace(Regex("""•\s*(19\d\d|20\d\d).*"""), "").trim().ifBlank { artistName }
+                                val year = YEAR_IN_TEXT_REGEX.find(subtitle)?.value?.toIntOrNull() ?: 2024
+                                val albArtist = if (subtitle.isNotBlank() && !subtitle.matches(YEAR_IN_TEXT_REGEX)) {
+                                    subtitle.replace(BULLET_YEAR_TAIL_REGEX, "").trim().ifBlank { artistName }
                                 } else {
                                     artistName
                                 }
@@ -4119,7 +4172,7 @@ class YouTubeMusicService(
                     }
                 }
                 if (bestUrl.isNotBlank()) {
-                    return bestUrl.replace(Regex("=w\\d+-h\\d+.*"), "=w1920-h800-p-l90-rj")
+                    return bestUrl.replace(THUMB_WH_TAIL_REGEX, "=w1920-h800-p-l90-rj")
                 }
             }
         } catch (_: Exception) {}
@@ -4308,7 +4361,7 @@ class YouTubeMusicService(
                 if (thumbObj != null && thumbObj.length() > 0) {
                     videoThumb = thumbObj.getJSONObject(thumbObj.length() - 1).optString("url")
                     if (videoThumb.isNotBlank()) {
-                        videoThumb = videoThumb.replace(Regex("=w\\d+-h\\d+.*"), "=w640-h360-p-l90-rj")
+                        videoThumb = videoThumb.replace(THUMB_WH_TAIL_REGEX, "=w640-h360-p-l90-rj")
                     }
                 }
                 if (videoThumb.isBlank()) {
@@ -4352,8 +4405,8 @@ class YouTubeMusicService(
             if (thumbObj != null && thumbObj.length() > 0) {
                 coverUrl = thumbObj.getJSONObject(thumbObj.length() - 1).optString("url")
                 if (coverUrl.isNotBlank()) {
-                    coverUrl = coverUrl.replace(Regex("=w\\d+-h\\d+.*"), "=w540-h540-p-l90-rj")
-                        .replace(Regex("=s\\d+.*"), "=s540-c-k-c0x00ffffff-no-rj-mo")
+                    coverUrl = coverUrl.replace(THUMB_WH_TAIL_REGEX, "=w540-h540-p-l90-rj")
+                        .replace(THUMB_S_TAIL_REGEX, "=s540-c-k-c0x00ffffff-no-rj-mo")
                 }
             }
 
@@ -4419,8 +4472,8 @@ class YouTubeMusicService(
                             AlbumItem(
                                 id = "ytm_alb_$browseId",
                                 title = title,
-                                artist = if (subtitle.isNotBlank() && !subtitle.matches(Regex("""\b(19\d\d|20\d\d)\b"""))) {
-                                    subtitle.replace(Regex("""•\s*(19\d\d|20\d\d).*"""), "").trim().ifBlank { artistName }
+                                artist = if (subtitle.isNotBlank() && !subtitle.matches(YEAR_IN_TEXT_REGEX)) {
+                                    subtitle.replace(BULLET_YEAR_TAIL_REGEX, "").trim().ifBlank { artistName }
                                 } else {
                                     artistName
                                 },
@@ -4439,7 +4492,7 @@ class YouTubeMusicService(
     }
 
     internal fun parseReleaseYearAndMonth(subtitle: String, fallbackYear: Int = 2024): Triple<Int, Int, String> {
-        val year = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value?.toIntOrNull() ?: fallbackYear
+        val year = YEAR_IN_TEXT_REGEX.find(subtitle)?.value?.toIntOrNull() ?: fallbackYear
         val lower = subtitle.lowercase(Locale.ROOT)
         val monthTokens = listOf(
             1 to listOf("jan", "ene", "enero", "january"),
@@ -5327,7 +5380,7 @@ class YouTubeMusicService(
             twoRow.optJSONObject("thumbnailRenderer")?.optJSONObject("musicThumbnailRenderer")?.optJSONObject("thumbnail")
         )
         val artist = extractArtistFromSubtitle(subtitle).ifBlank { "YouTube Artist" }
-        val yearStr = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value
+        val yearStr = YEAR_IN_TEXT_REGEX.find(subtitle)?.value
 
         val id = when {
             browseId.isNotBlank() -> "nr_alb_$browseId"
@@ -5436,7 +5489,7 @@ class YouTubeMusicService(
 
         if (isAlbum) {
             val artist = extractArtistFromSubtitle(subtitle).ifBlank { "YouTube Artist" }
-            val year = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value?.toIntOrNull() ?: 2024
+            val year = YEAR_IN_TEXT_REGEX.find(subtitle)?.value?.toIntOrNull() ?: 2024
             val albumKey = "${title.lowercase(Locale.ROOT)}::${artist.lowercase(Locale.ROOT)}"
             if (seenAlbumKeys.add(albumKey)) {
                 albums.add(
@@ -5460,7 +5513,7 @@ class YouTubeMusicService(
                         artworkUri = thumb,
                         isAlbum = true,
                         browseId = browseId.ifBlank { null },
-                        year = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value
+                        year = YEAR_IN_TEXT_REGEX.find(subtitle)?.value
                     )
                 )
             }
@@ -5528,7 +5581,7 @@ class YouTubeMusicService(
                             artworkUri = thumb,
                             isAlbum = false,
                             videoId = videoId,
-                            year = Regex("""\b(19\d\d|20\d\d)\b""").find(subtitle)?.value
+                            year = YEAR_IN_TEXT_REGEX.find(subtitle)?.value
                         )
                     )
                 }

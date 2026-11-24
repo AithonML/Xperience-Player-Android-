@@ -142,7 +142,7 @@ class PlaybackService : MediaSessionService(), MediaSessionService.Listener {
 
         // Keep Home Screen widgets live-synced during headless background playback (when UI ViewModel is not attached)
         serviceScope.launch(Dispatchers.IO) {
-            val repo = FavoritesRepository(applicationContext)
+            val repo = FavoritesRepository.getInstance(applicationContext)
             favoritesRepository = repo
             playerService.playbackState.collect { state ->
                 if (WidgetSyncBridge.onFavoriteToggleRequested != null) {
@@ -151,7 +151,9 @@ class PlaybackService : MediaSessionService(), MediaSessionService.Listener {
                 val trackId = state.currentTrack?.id
                 if (trackId != lastSyncedBackgroundTrackId) {
                     lastSyncedBackgroundTrackId = trackId
-                    runCatching { repo.loadFavoritesFromDisk() }
+                    if (repo.likedTrackIds.value.isEmpty()) {
+                        runCatching { repo.loadFavoritesFromDisk() }
+                    }
                 }
                 val isLiked = trackId != null &&
                     repo.likedTrackIds.value.contains(trackId)

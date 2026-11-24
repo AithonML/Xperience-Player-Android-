@@ -411,7 +411,8 @@ fun MoreLikeAlbumSectionRow(
         ) {
             itemsIndexed(
                 items = visibleAlbums,
-                key = { index, album -> "${section.id}_${album.id}_$index" }
+                key = { index, album -> "${section.id}_${album.id}_$index" },
+                contentType = { _, _ -> "more_like_album_card" }
             ) { index, album ->
                 MoreLikeAlbumCard(
                     album = album,
@@ -558,7 +559,8 @@ fun PlaylistsMadeForYouSection(
         ) {
             itemsIndexed(
                 items = playlists,
-                key = { index, item -> "playlist_mfy_${item.id}_$index" }
+                key = { index, item -> "playlist_mfy_${item.id}_$index" },
+                contentType = { _, _ -> "playlist_mfy_card" }
             ) { index, playlist ->
                 PlaylistMadeForYouCard(
                     playlist = playlist,
@@ -717,7 +719,8 @@ fun RadioStationsSection(
         ) {
             itemsIndexed(
                 items = cappedStations,
-                key = { index, station -> "radio_home_${station.id}_$index" }
+                key = { index, station -> "radio_home_${station.id}_$index" },
+                contentType = { _, _ -> "radio_station_card" }
             ) { index, station ->
                 RadioStationCard(
                     station = station,
@@ -730,7 +733,7 @@ fun RadioStationsSection(
                 )
             }
 
-            item(key = "radio_see_more_end") {
+            item(key = "radio_see_more_end", contentType = "see_more_card") {
                 SeeMoreEndCard(
                     label = "See more",
                     subtitle = "Explore stations",
@@ -916,7 +919,8 @@ fun NovedadesSection(
         ) {
             itemsIndexed(
                 items = cappedReleases,
-                key = { index, release -> "novedades_home_${release.id}_$index" }
+                key = { index, release -> "novedades_home_${release.id}_$index" },
+                contentType = { _, _ -> "new_release_card" }
             ) { index, release ->
                 NewReleaseCard(
                     release = release,
@@ -929,7 +933,7 @@ fun NovedadesSection(
                 )
             }
 
-            item(key = "novedades_see_more_end") {
+            item(key = "novedades_see_more_end", contentType = "see_more_card") {
                 SeeMoreEndCard(
                     label = "See more",
                     subtitle = "All new releases",
@@ -1481,7 +1485,8 @@ fun SmartSuggestedPlaylistsSection(
         ) {
             itemsIndexed(
                 items = playlists,
-                key = { index, item -> "smart_home_${item.id}_$index" }
+                key = { index, item -> "smart_home_${item.id}_$index" },
+                contentType = { _, _ -> "smart_playlist_card" }
             ) { index, playlist ->
                 val isSaved = savedPlaylistTitles.contains(playlist.title.trim().lowercase())
                 SmartSuggestedPlaylistHomeCard(

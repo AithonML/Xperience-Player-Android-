@@ -124,9 +124,9 @@ fun YouTubeLoginSheet(
         onDispose {
             isDisposed.set(true)
             probeGeneration.incrementAndGet()
+            mainHandler.removeCallbacksAndMessages(null)
             runCatching {
-                webViewRef?.stopLoading()
-                webViewRef?.destroy()
+                webViewRef?.handler?.removeCallbacksAndMessages(null)
             }
             webViewRef = null
         }
@@ -416,6 +416,23 @@ fun YouTubeLoginSheet(
                                     mainHandler = mainHandler,
                                     isDisposed = isDisposed
                                 )
+                            }
+                        },
+                        onRelease = { wv ->
+                            runCatching {
+                                wv.handler?.removeCallbacksAndMessages(null)
+                                wv.stopLoading()
+                                wv.onPause()
+                                wv.webChromeClient = null
+                                wv.webViewClient = WebViewClient()
+                                wv.loadUrl("about:blank")
+                                wv.clearHistory()
+                                wv.removeAllViews()
+                                (wv.parent as? ViewGroup)?.removeView(wv)
+                                wv.destroy()
+                            }
+                            if (webViewRef === wv) {
+                                webViewRef = null
                             }
                         }
                     )
