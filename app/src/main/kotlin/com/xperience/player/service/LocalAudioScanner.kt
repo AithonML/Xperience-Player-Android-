@@ -4,6 +4,8 @@ import android.content.ContentUris
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.util.Log
+import com.xperience.player.BuildConfig
 import android.os.Build
 import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
@@ -255,7 +257,7 @@ class LocalAudioScanner(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("LocalAudioScanner", "Local audio scan failed", e) }
         }
 
         tracks

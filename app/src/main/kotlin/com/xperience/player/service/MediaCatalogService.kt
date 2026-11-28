@@ -3,6 +3,8 @@ package com.xperience.player.service
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
+import android.util.Log
+import com.xperience.player.BuildConfig
 import com.xperience.player.domain.model.AlbumDetailProfile
 import com.xperience.player.domain.model.AlbumItem
 import com.xperience.player.domain.model.ArtistDetailProfile
@@ -148,7 +150,7 @@ class MediaCatalogService(
             }
             recentlyPlayedPrefs.edit().putString("recently_played_json", array.toString()).apply()
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
         }
     }
 
@@ -177,7 +179,7 @@ class MediaCatalogService(
                 )
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
         }
         val (sanitized, modified) = YouTubeMusicService.sanitizePersistedTracks(
             list,
@@ -421,7 +423,7 @@ class MediaCatalogService(
             val tracks = scanner.scanMediaStoreTracks()
             addTracksInternal(tracks)
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
         }
     }
 
@@ -791,7 +793,7 @@ class MediaCatalogService(
             }
             updateFeedState()
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
             updateFeedState()
         }
     }
@@ -867,6 +869,8 @@ class MediaCatalogService(
 
     suspend fun signOutYouTubeAccount() = withContext(Dispatchers.IO) {
         authManager.clearSession()
+        ytmService.clearAuthCaches()
+        WebViewSessionCleaner.clearAll()
         _isPersonalizedFromAccount = false
         val likedSnapshot = synchronized(catalogStateLock) { _likedTracks }
         fetchOnlineRecommendationsInternal(
@@ -1098,7 +1102,7 @@ class MediaCatalogService(
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
         } finally {
             if (shouldTrackLoading) {
                 endFeedLoadingState()
@@ -1572,7 +1576,7 @@ class MediaCatalogService(
             val filtered = result.songs.filter { it.id !in likedIds && it.title.trim().lowercase() !in likedTitles }
             if (filtered.isNotEmpty()) filtered.take(15) else result.songs.take(15)
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
             emptyList()
         }
     }

@@ -2,6 +2,7 @@ package com.xperience.player.service
 
 import android.content.Context
 import android.util.Log
+import com.xperience.player.BuildConfig
 import com.xperience.player.domain.model.AlbumDetailProfile
 import com.xperience.player.domain.model.AlbumItem
 import com.xperience.player.domain.model.ArtistDetailProfile
@@ -165,7 +166,7 @@ data class ResolvedMusicVideo(
 )
 
 class YouTubeMusicService(
-    val httpClient: OkHttpClient = MediaNetworkClients.sharedOkHttpClient,
+    val httpClient: OkHttpClient = YouTubeSecurityPolicy.createScopedYouTubeHttpClient(MediaNetworkClients.sharedOkHttpClient),
     private val searchUrl: String = SEARCH_URL,
     private val browseUrl: String = BROWSE_URL,
     private val swJsUrl: String = SW_JS_URL,
@@ -649,7 +650,16 @@ class YouTubeMusicService(
         includeAuthHeaders: Boolean = true
     ): JSONObject? = executeInnerTubePostWithStatus(url, payload, includeAuthHeaders).json
 
+    fun clearAuthCaches() {
+        streamCache.clear()
+        videoStreamCache.clear()
+        cache.clear()
+        searchFilterCache.clear()
+        moodCategoryDetailCache.clear()
+    }
+
     private fun safeLog(message: String, error: Throwable? = null) {
+        if (!BuildConfig.DEBUG) return
         runCatching {
             if (error != null) Log.w(TAG, message, error) else Log.d(TAG, message)
         }
@@ -1390,7 +1400,6 @@ class YouTubeMusicService(
             JSONObject(sidecar.readText(Charsets.UTF_8))
         }.getOrNull()
     }
-
     internal fun trimAudioCacheIfNeeded(
         cacheDir: File,
         maxBytes: Long = MAX_AUDIO_CACHE_BYTES,
@@ -1429,7 +1438,7 @@ class YouTubeMusicService(
         if (!resolved.referer.isNullOrBlank()) {
             requestBuilder.header("Referer", resolved.referer)
         }
-        if (!resolved.cookie.isNullOrBlank()) {
+        if (!resolved.cookie.isNullOrBlank() && YouTubeSecurityPolicy.isSafeHttpsYouTubeStreamUrl(url)) {
             requestBuilder.header("Cookie", resolved.cookie)
         }
         return requestBuilder.build()
@@ -1535,7 +1544,7 @@ class YouTubeMusicService(
                     val json = JSONArray(text)
                     val visitor = findVisitorDataRecursive(json)
                     if (visitor != null) {
-                        safeLog("sw.js_data visitorData resolved: ${visitor.take(25)}...")
+                        safeLog("sw.js_data visitorData resolved")
                         cachedVisitorData = visitor
                         cachedCookies = formattedCookies
                         visitorDataExpiry = clockMs() + (6 * 3600 * 1000L)
@@ -2852,10 +2861,17 @@ class YouTubeMusicService(
         isHls: Boolean
     ): Boolean {
         return try {
+            val allowSensitive = YouTubeSecurityPolicy.isSafeHttpsYouTubeStreamUrl(streamUrl)
             val reqBuilder = Request.Builder()
                 .url(streamUrl)
                 .header("Accept", "*/*")
-            headers.forEach { (k, v) -> reqBuilder.header(k, v) }
+            headers.forEach { (k, v) ->
+                val isSensitive = k.equals("Cookie", ignoreCase = true) ||
+                    k.equals("Authorization", ignoreCase = true)
+                if (!isSensitive || allowSensitive) {
+                    reqBuilder.header(k, v)
+                }
+            }
             if (!isHls) {
                 reqBuilder.header("Range", "bytes=0-2047")
             }

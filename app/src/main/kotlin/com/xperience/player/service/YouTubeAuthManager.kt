@@ -22,6 +22,7 @@ import javax.crypto.spec.GCMParameterSpec
 interface SecretCipher {
     fun encrypt(plaintext: String): String
     fun decrypt(ciphertext: String): String?
+    fun deleteKey() {}
 }
 
 interface AuthPrefsStore {
@@ -144,10 +145,12 @@ class AndroidKeystoreSecretCipher(
         }.getOrNull()
     }
 
-    private fun deleteKey() {
-        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        if (keyStore.containsAlias(keyAlias)) {
-            keyStore.deleteEntry(keyAlias)
+    override fun deleteKey() {
+        runCatching {
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            if (keyStore.containsAlias(keyAlias)) {
+                keyStore.deleteEntry(keyAlias)
+            }
         }
     }
 
@@ -234,8 +237,8 @@ class YouTubeAuthManager(
         synchronized(lock) {
             if (isHydrated) return
             loadSessionFromStore()
-            refreshPromptState()
             isHydrated = true
+            refreshPromptState()
         }
     }
 
@@ -340,6 +343,7 @@ class YouTubeAuthManager(
         synchronized(lock) {
             currentSession = null
             store.remove(KEY_ENCRYPTED_SESSION)
+            runCatching { cipher.deleteKey() }
             _accountState.value = YtmAccountState(isSignedIn = false)
             refreshPromptState()
             safeLog("Cleared encrypted YTM session")
@@ -373,13 +377,20 @@ class YouTubeAuthManager(
     }
 
     fun isSignedIn(): Boolean {
+        ensureHydrated()
         val session = currentSession ?: return false
         return session.cookie.isNotBlank() && hasYouTubeAccountSession(session.cookie)
     }
 
-    fun getCookie(): String? = currentSession?.cookie?.takeIf { it.isNotBlank() }
+    fun getCookie(): String? {
+        ensureHydrated()
+        return currentSession?.cookie?.takeIf { it.isNotBlank() }
+    }
 
-    fun getVisitorData(): String? = currentSession?.visitorData?.takeIf { it.isNotBlank() }
+    fun getVisitorData(): String? {
+        ensureHydrated()
+        return currentSession?.visitorData?.takeIf { it.isNotBlank() }
+    }
 
     fun getRawDataSyncId(): String? = currentSession?.dataSyncId?.takeIf { it.isNotBlank() && it != "null" }
 

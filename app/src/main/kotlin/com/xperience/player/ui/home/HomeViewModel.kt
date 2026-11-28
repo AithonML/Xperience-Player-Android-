@@ -4,6 +4,8 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.net.Uri
+import android.util.Log
+import com.xperience.player.BuildConfig
 import androidx.core.content.edit
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -1786,7 +1788,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         artistDetailJob = viewModelScope.launch {
             try {
                 catalogService.observeArtistDetail(primaryArtist, existingAvatarUri, cleanBrowseId)
-                    .catch { e -> e.printStackTrace() }
+                    .catch { e -> if (BuildConfig.DEBUG) runCatching { Log.w("HomeViewModel", "Operation failed", e) } }
                     .collect { detail ->
                         if (generation != artistRequestGeneration) return@collect
                         _currentArtistDetail.value = detail
@@ -2326,7 +2328,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val results = catalogService.searchYouTubeMusic(query, filter)
             _searchResults.value = results
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("HomeViewModel", "Operation failed", e) }
         } finally {
             _isSearching.value = false
         }
@@ -2390,7 +2392,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 val recs = catalogService.getRecommendationsForLiked(favoritesRepository.likedTracks.value)
                 _likedRecommendations.value = recs
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("HomeViewModel", "Operation failed", e) }
             } finally {
                 _isLoadingLikedRecommendations.value = false
             }
@@ -2717,7 +2719,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("HomeViewModel", "Operation failed", e) }
             } finally {
                 _isRefreshingImportedPlaylist.value = false
             }
@@ -3150,7 +3152,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     _currentLyricsProviderName.value = null
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("HomeViewModel", "Operation failed", e) }
                 _currentLyrics.value = emptyList()
                 _currentLyricsProviderName.value = null
             }
@@ -3350,7 +3352,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("HomeViewModel", "Operation failed", e) }
             } finally {
                 _isSyncingYtmAccount.value = false
             }
@@ -3367,7 +3369,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("HomeViewModel", "Operation failed", e) }
             } finally {
                 _isSyncingYtmAccount.value = false
             }
@@ -3390,7 +3392,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("HomeViewModel", "Operation failed", e) }
             }
         }
     }
@@ -3476,7 +3478,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("HomeViewModel", "Operation failed", e) }
                 if (fallbackTrack != null) {
                     onSearchTrackClicked(fallbackTrack)
                 }
@@ -3496,7 +3498,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("HomeViewModel", "Operation failed", e) }
                 if (fallbackTrack != null) {
                     onSearchTrackClicked(fallbackTrack)
                 }

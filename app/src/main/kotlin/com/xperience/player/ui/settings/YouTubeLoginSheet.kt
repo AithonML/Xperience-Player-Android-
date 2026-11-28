@@ -68,7 +68,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
+import com.xperience.player.service.WebViewSessionCleaner
 import com.xperience.player.service.YouTubeAuthManager
+import com.xperience.player.service.YouTubeSecurityPolicy
 import com.xperience.player.ui.adaptive.LocalAppWindowSizeClass
 import com.xperience.player.ui.adaptive.shouldUseModalDialogs
 import com.xperience.player.ui.component.shapes.ContinuousRoundedRectangle
@@ -106,6 +109,7 @@ fun YouTubeLoginSheet(
 
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var currentHostLabel by remember { mutableStateOf("accounts.google.com") }
+    var currentUrl by remember { mutableStateOf(YTM_SERVICE_LOGIN_URL) }
     var pageProgress by remember { mutableFloatStateOf(0f) }
     var isPageLoading by remember { mutableStateOf(true) }
     val hasCapturedSession = remember { AtomicBoolean(false) }
@@ -125,9 +129,11 @@ fun YouTubeLoginSheet(
             isDisposed.set(true)
             probeGeneration.incrementAndGet()
             mainHandler.removeCallbacksAndMessages(null)
+            val wv = webViewRef
             runCatching {
-                webViewRef?.handler?.removeCallbacksAndMessages(null)
+                wv?.handler?.removeCallbacksAndMessages(null)
             }
+            WebViewSessionCleaner.clearAll(wv)
             webViewRef = null
         }
     }
@@ -154,7 +160,8 @@ fun YouTubeLoginSheet(
         onDismissRequest = { if (!isValidating) onDismiss() },
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = useModalDialog
+            decorFitsSystemWindows = useModalDialog,
+            securePolicy = SecureFlagPolicy.SecureOn
         )
     ) {
         Surface(
@@ -225,12 +232,14 @@ fun YouTubeLoginSheet(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Lock,
-                                contentDescription = null,
-                                tint = accentColor,
-                                modifier = Modifier.size(12.dp)
-                            )
+                            if (currentUrl.startsWith("https://", ignoreCase = true)) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = null,
+                                    tint = accentColor,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
                             Text(
                                 text = currentHostLabel,
                                 color = appColors.textSecondary,
@@ -346,13 +355,16 @@ fun YouTubeLoginSheet(
                                 settings.apply {
                                     javaScriptEnabled = true
                                     domStorageEnabled = true
-                                    databaseEnabled = true
+                                    databaseEnabled = false
+                                    allowFileAccess = false
+                                    allowContentAccess = false
                                     useWideViewPort = true
                                     loadWithOverviewMode = true
                                     setSupportZoom(true)
                                     builtInZoomControls = true
                                     displayZoomControls = false
                                     mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                                    safeBrowsingEnabled = true
                                     userAgentString = userAgentString.replace("; wv", "")
                                 }
 
@@ -370,12 +382,15 @@ fun YouTubeLoginSheet(
                                         view: WebView?,
                                         request: WebResourceRequest?
                                     ): Boolean {
-                                        val scheme = request?.url?.scheme?.lowercase() ?: return false
-                                        return scheme != "https" && scheme != "http"
+                                        val targetUrl = request?.url?.toString() ?: return true
+                                        return !isAllowedGoogleAuthUrl(targetUrl)
                                     }
 
                                     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                         isPageLoading = true
+                                        if (!url.isNullOrBlank()) {
+                                            currentUrl = url
+                                        }
                                         val host = runCatching { Uri.parse(url).host }.getOrNull()
                                         if (!host.isNullOrBlank()) {
                                             currentHostLabel = host
@@ -385,13 +400,13 @@ fun YouTubeLoginSheet(
                                     override fun onPageFinished(view: WebView?, url: String?) {
                                         isPageLoading = false
                                         if (view == null || url == null || isDisposed.get()) return
+                                        currentUrl = url
                                         val host = runCatching { Uri.parse(url).host }.getOrNull()
                                         if (!host.isNullOrBlank()) {
                                             currentHostLabel = host
                                         }
 
                                         if (isMusicYouTubeUrl(url) && !hasCapturedSession.get()) {
-                                            cookieManager.flush()
                                             val generation = probeGeneration.incrementAndGet()
                                             probeCredentialsWithRetry(
                                                 webView = view,
@@ -427,6 +442,7 @@ fun YouTubeLoginSheet(
                                 wv.webViewClient = WebViewClient()
                                 wv.loadUrl("about:blank")
                                 wv.clearHistory()
+                                WebViewSessionCleaner.clearAll(wv)
                                 wv.removeAllViews()
                                 (wv.parent as? ViewGroup)?.removeView(wv)
                                 wv.destroy()
@@ -473,6 +489,10 @@ fun YouTubeLoginSheet(
     }
 }
 
+fun isAllowedGoogleAuthUrl(url: String): Boolean {
+    return YouTubeSecurityPolicy.isAllowedGoogleAuthUrl(url)
+}
+
 private fun isMusicYouTubeUrl(url: String?): Boolean {
     if (url.isNullOrBlank()) return false
     val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return false
@@ -516,7 +536,6 @@ private fun probeCredentialsWithRetry(
 ) {
     if (isDisposed.get() || hasCapturedSession.get() || probeGeneration.get() != expectedGeneration) return
 
-    cookieManager.flush()
     val cookie = readCombinedYtmCookie(cookieManager)
     if (!YouTubeAuthManager.hasYouTubeAccountSession(cookie)) {
         if (attempt < MAX_CREDENTIAL_PROBE_ATTEMPTS) {
@@ -581,11 +600,11 @@ private fun probeCredentialsWithRetry(
             )
 
         if (isReady) {
-            cookieManager.flush()
             val latestCookie = readCombinedYtmCookie(cookieManager)
             if (YouTubeAuthManager.hasYouTubeAccountSession(latestCookie) &&
                 hasCapturedSession.compareAndSet(false, true)
             ) {
+                WebViewSessionCleaner.clearAll(webView)
                 onCapture(latestCookie, visitorData, dataSyncId)
                 return@evaluateJavascript
             }

@@ -3,6 +3,8 @@ package com.xperience.player.ui.settings
 import android.content.Intent
 import android.net.Uri
 import android.text.format.DateUtils
+import android.util.Log
+import com.xperience.player.BuildConfig
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -190,7 +192,7 @@ fun SettingsSheet(
                 val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 context.contentResolver.takePersistableUriPermission(it, takeFlags)
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("SettingsSheet", "Failed taking persistable URI permission", e) }
             }
             onAddFolder(it)
         }
@@ -204,7 +206,7 @@ fun SettingsSheet(
                 val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 context.contentResolver.takePersistableUriPermission(it, takeFlags)
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("SettingsSheet", "Failed taking persistable URI permission", e) }
             }
             val path = it.toString()
             onUpdateDownloadOptions(downloadOptions.copy(downloadDirectory = path))

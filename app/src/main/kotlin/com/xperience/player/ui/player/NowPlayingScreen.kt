@@ -1,7 +1,9 @@
 package com.xperience.player.ui.player
 
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
+import com.xperience.player.BuildConfig
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -290,7 +292,7 @@ fun NowPlayingScreen(
                     Toast.makeText(context, "Lyrics imported successfully", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("NowPlayingScreen", "Error reading LRC file", e) }
                 Toast.makeText(context, "Error reading LRC file", Toast.LENGTH_SHORT).show()
             }
         }

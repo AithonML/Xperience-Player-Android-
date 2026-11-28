@@ -221,7 +221,6 @@ class AudioPlayerService private constructor(
 
     private val _currentTrackPlaybackInfo = MutableStateFlow<TrackPlaybackInfo?>(null)
     val currentTrackPlaybackInfo: StateFlow<TrackPlaybackInfo?> = _currentTrackPlaybackInfo.asStateFlow()
-
     var onTrackPlayed: ((TrackItem) -> Unit)? = null
     var onDataLimitReached: ((DataLimitReachedEvent) -> Unit)? = null
 
@@ -849,7 +848,6 @@ class AudioPlayerService private constructor(
         ensureServiceStarted()
 
         audioLoadJob?.cancel()
-
         if (isLocalPlayableTrack(track)) {
             Log.d(TAG, "Playing local audio: ${track.audioUrl}")
             dataUsageTracker.setActiveTrackContext(track, isLocal = true, isDownloaded = false)
@@ -1462,7 +1460,6 @@ class AudioPlayerService private constructor(
             runCatching { retriever.release() }
         }
     }
-
     private fun handleOnlineDownloadFailure(reason: String, autoPlay: Boolean) {
         Log.w(TAG, "Online track load failed ($reason)")
         isLoadingMedia = false
