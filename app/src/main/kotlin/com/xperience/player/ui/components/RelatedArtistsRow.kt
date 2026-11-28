@@ -1,8 +1,9 @@
 package com.xperience.player.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -32,8 +33,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -48,7 +51,8 @@ import com.xperience.player.ui.theme.LocalAppColors
 fun RelatedArtistsRow(
     artists: List<ArtistItem>,
     onArtistClick: (ArtistItem) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onArtistLongPress: ((ArtistItem) -> Unit)? = null
 ) {
     if (artists.isEmpty()) return
     val appColors = LocalAppColors.current
@@ -77,19 +81,23 @@ fun RelatedArtistsRow(
             artists.forEach { artist ->
                 ArtistCircleItem(
                     artist = artist,
-                    onClick = { onArtistClick(artist) }
+                    onClick = { onArtistClick(artist) },
+                    onLongClick = onArtistLongPress?.let { cb -> { cb(artist) } }
                 )
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ArtistCircleItem(
     artist: ArtistItem,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     var avatarUriState by remember(artist.id, artist.name, artist.avatarUri) {
         mutableStateOf(artist.avatarUri)
     }
@@ -118,10 +126,16 @@ private fun ArtistCircleItem(
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.clickable(
+        modifier = Modifier.combinedClickable(
             interactionSource = interactionSource,
             indication = null,
-            onClick = onClick
+            onClick = onClick,
+            onLongClick = onLongClick?.let { cb ->
+                {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    cb()
+                }
+            }
         )
     ) {
         Box(

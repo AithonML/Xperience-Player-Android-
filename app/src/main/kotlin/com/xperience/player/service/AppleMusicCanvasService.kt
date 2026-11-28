@@ -97,8 +97,8 @@ class AppleMusicCanvasService(
         private const val ARTIST_ID_TTL_MS = 30L * 24L * 60L * 60L * 1000L
         private const val SCRAPE_FAILURE_BACKOFF_MS = 10L * 60L * 1000L
         private const val MAX_ALBUM_PROBES = 3
-        private const val MAX_ALBUM_CANVAS_CACHE_ENTRIES = 300
-        private const val MAX_ARTIST_CACHE_ENTRIES = 300
+        private const val MAX_ALBUM_CANVAS_CACHE_ENTRIES = 512
+        private const val MAX_ARTIST_CACHE_ENTRIES = 256
         private const val MAX_ARTIST_ID_CACHE_ENTRIES = 400
 
         private val INVALID_ALBUM_NAMES = setOf(
@@ -215,6 +215,9 @@ class AppleMusicCanvasService(
 
         private val DIACRITICS_REGEX = Regex("\\p{InCombiningDiacriticalMarks}+")
         private val TOKEN_SPLIT_REGEX = Regex("[^a-z0-9]+")
+        private val NON_ALPHANUM_REGEX = Regex("[^a-z0-9]")
+        private val TOPIC_SUFFIX_REGEX = Regex("\\s*-\\s*Topic$", RegexOption.IGNORE_CASE)
+        private val VEVO_SUFFIX_REGEX = Regex("\\s*VEVO$", RegexOption.IGNORE_CASE)
         private val FEATURE_DELIM_REGEX = Regex("\\s*(?:\\bfeat\\.?\\b|\\bft\\.?\\b|\\bfeaturing\\b|,|&|;|/|\\+|\\bx\\b)\\s*", RegexOption.IGNORE_CASE)
         private val META_ENV_REGEX = Pattern.compile(
             "<meta[^>]+name=[\"']desktop-music-app/config/environment[\"'][^>]+content=[\"']([^\"']+)[\"']|" +
@@ -633,7 +636,7 @@ class AppleMusicCanvasService(
 
         val now = clockMs()
         val entry = artistAssetsCache[key] ?: return null
-        val value = entry.value ?: return null
+        val value = entry.value?.let { sanitizeArtistAssetsWordmark(it) } ?: return null
         if (entry.isFresh(now)) return value
         if (entry.isStaleReadable(now)) {
             serviceScope.launch {
@@ -662,7 +665,7 @@ class AppleMusicCanvasService(
         val now = clockMs()
         val existing = artistAssetsCache[key]
         if (existing != null && existing.isFresh(now)) {
-            return@withContext existing.value
+            return@withContext existing.value?.let { sanitizeArtistAssetsWordmark(it) }
         }
 
         val deferred = inFlightArtistAssets.computeIfAbsent(key) {
@@ -1047,7 +1050,8 @@ class AppleMusicCanvasService(
 
     private suspend fun fetchArtistAssetsUncached(cleanArtist: String): ArtistAssetsOutcome {
         val normalizedArtist = normalizeKey(cleanArtist)
-        val cachedIdEntry = artistIdCache[normalizedArtist]?.takeIf { clockMs() < it.expiresAtMs }
+        val cachedIdEntry = artistIdCache[normalizedArtist]
+            ?.takeIf { clockMs() < it.expiresAtMs && normalizeKey(it.name) == normalizedArtist }
 
         var anyTransientError = false
 
@@ -1130,12 +1134,13 @@ class AppleMusicCanvasService(
                 val id = item.optString("id", "").takeIf { it.isNotBlank() } ?: continue
                 val attr = item.optJSONObject("attributes") ?: continue
                 val name = attr.optString("name", "")
-                if (!artistMatches(name, cleanArtist)) continue
+                val nName = normalizeKey(cleanArtistName(name))
+                // Standalone artist resolution must match exact normalized artist name
+                // so e.g. "Sheena" does not pull "Sheena Ringo"'s Apple Music profile.
+                if (nName.isBlank() || nName != normTarget) continue
 
-                val nName = normalizeKey(name)
-                var score = 0
-                if (nName == normTarget) score += 100
-                else if (nName.startsWith(normTarget)) score += 40
+                var score = 100
+                if (name.trim().equals(cleanArtist.trim(), ignoreCase = true)) score += 20
                 if (attr.has("editorialArtwork") || attr.has("editorialVideo") || attr.has("artwork")) score += 10
 
                 if (score > bestScore) {
@@ -1292,20 +1297,16 @@ class AppleMusicCanvasService(
                 if (!resp.isSuccessful) return null
                 val body = resp.body?.string() ?: return null
                 val results = JSONObject(body).optJSONArray("results") ?: return null
-                var fallbackUrl: String? = null
                 for (i in 0 until results.length()) {
                     val item = results.optJSONObject(i) ?: continue
                     val candName = item.optString("artistName", "")
                     val candUrl = item.optString("artistLinkUrl", "")
                     if (candUrl.isBlank()) continue
-                    if (normalizeKey(candName) == normalizeKey(cleanArtist)) {
+                    if (normalizeKey(cleanArtistName(candName)) == normalizeKey(cleanArtist)) {
                         return@use candUrl
                     }
-                    if (fallbackUrl == null && artistMatches(candName, cleanArtist)) {
-                        fallbackUrl = candUrl
-                    }
                 }
-                fallbackUrl
+                null
             } ?: return null
 
             val pageReq = Request.Builder()
@@ -1890,10 +1891,12 @@ class AppleMusicCanvasService(
                 if (now >= stale && now >= exp) continue
                 val hasValue = obj.optBoolean("hit", false)
                 val value = if (hasValue) {
+                    val rawWordmark = obj.optString("wm", "").takeIf { it.isNotBlank() }
+                    val sanitizedWordmark = rawWordmark?.let { normalizeAppleWordmarkUrl(it) }?.takeIf { it.isNotBlank() }
                     ArtistAssetsResult(
                         appleArtistId = obj.optString("id", ""),
                         artistName = obj.optString("name", ""),
-                        wordmarkUri = obj.optString("wm", "").takeIf { it.isNotBlank() },
+                        wordmarkUri = sanitizedWordmark,
                         headerVideoUri = obj.optString("vid", "").takeIf { it.isNotBlank() },
                         bannerUri = obj.optString("ban", "").takeIf { it.isNotBlank() },
                         bgColorHex = obj.optString("bg", "").takeIf { it.isNotBlank() },
@@ -1999,8 +2002,8 @@ class AppleMusicCanvasService(
 
     private fun cleanArtistName(artist: String): String {
         return artist
-            .replace(Regex("\\s*-\\s*Topic$", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("\\s*VEVO$", RegexOption.IGNORE_CASE), "")
+            .replace(TOPIC_SUFFIX_REGEX, "")
+            .replace(VEVO_SUFFIX_REGEX, "")
             .trim()
     }
 
@@ -2058,7 +2061,7 @@ class AppleMusicCanvasService(
             .replace(DIACRITICS_REGEX, "")
         return decomposed
             .lowercase(Locale.ROOT)
-            .replace(Regex("[^a-z0-9]"), "")
+            .replace(NON_ALPHANUM_REGEX, "")
             .trim()
     }
 
@@ -2110,23 +2113,37 @@ class AppleMusicCanvasService(
             .replace("{f}", "jpg", ignoreCase = true)
     }
 
-    private fun normalizeAppleWordmarkUrl(rawUrl: String): String {
+    private fun sanitizeArtistAssetsWordmark(result: ArtistAssetsResult): ArtistAssetsResult {
+        val raw = result.wordmarkUri?.takeIf { it.isNotBlank() } ?: return result
+        val normalized = normalizeAppleWordmarkUrl(raw).takeIf { it.isNotBlank() }
+        return if (normalized == raw) result else result.copy(wordmarkUri = normalized)
+    }
+
+    internal fun normalizeAppleWordmarkUrl(rawUrl: String): String {
         if (rawUrl.isBlank()) return ""
         val cleaned = rawUrl.replace("\\/", "/").trim()
         // Coil does not include coil-svg in this build, so always request raster PNG wordmarks
         if (cleaned.endsWith(".svg", ignoreCase = true)) return ""
+        // Apple Music AMP returns both legacy ".png/{w}x{h}bb.{f}" and opaque-token "/{w}x{h}bb.jpg" URLs.
+        // Requesting .jpg causes Apple's CDN to composite white lettering onto a solid #FFFFFF JPEG rectangle;
+        // always force 800x266bb.png on mzstatic.com/image/thumb/ URLs so 32-bit RGBA alpha transparency is preserved.
+        val thumbIdx = cleaned.indexOf("/image/thumb/", ignoreCase = true)
         val lastSlash = cleaned.lastIndexOf('/')
-        if (lastSlash > 0 && cleaned.contains(".png/", ignoreCase = true)) {
+        if ((thumbIdx >= 0 && lastSlash > thumbIdx + "/image/thumb/".length) ||
+            (lastSlash > 0 && cleaned.contains(".png/", ignoreCase = true))
+        ) {
             return "${cleaned.substring(0, lastSlash + 1)}800x266bb.png"
         }
         return cleaned
             .replace("{w}x{h}{c}.{f}", "800x266bb.png", ignoreCase = true)
             .replace("{w}x{h}bb.{f}", "800x266bb.png", ignoreCase = true)
+            .replace("{w}x{h}bb.jpg", "800x266bb.png", ignoreCase = true)
+            .replace("{w}x{h}bb.jpeg", "800x266bb.png", ignoreCase = true)
+            .replace("{w}x{h}bb.webp", "800x266bb.png", ignoreCase = true)
             .replace("{w}", "800", ignoreCase = true)
             .replace("{h}", "266", ignoreCase = true)
             .replace("{c}", "bb", ignoreCase = true)
             .replace("{f}", "png", ignoreCase = true)
-            .replace("800x266bb.webp", "800x266bb.png", ignoreCase = true)
-            .replace("400x133bb.webp", "800x266bb.png", ignoreCase = true)
+            .replace(Regex("\\.(?:jpe?g|webp)(?=\\?|$)", RegexOption.IGNORE_CASE), ".png")
     }
 }

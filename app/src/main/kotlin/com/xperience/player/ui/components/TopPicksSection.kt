@@ -61,7 +61,8 @@ fun TopPicksSection(
     items: List<TopPickItem>,
     onTopPickClick: (TopPickItem) -> Unit,
     modifier: Modifier = Modifier,
-    title: String = "Top Picks for You"
+    title: String = "Top Picks for You",
+    onTopPickLongPress: ((TopPickItem) -> Unit)? = null
 ) {
     if (items.isEmpty()) return
     val appColors = LocalAppColors.current
@@ -86,12 +87,14 @@ fun TopPicksSection(
         ) {
             itemsIndexed(
                 items = items,
-                key = { index, item -> "top_pick_${item.kind.name}_${item.id}_$index" }
+                key = { index, item -> "top_pick_${item.kind.name}_${item.id}_$index" },
+                contentType = { _, item -> item.kind.name }
             ) { index, item ->
                 TopPickEditorialCard(
                     item = item,
                     accentColor = accentColor,
                     onClick = { onTopPickClick(item) },
+                    onLongClick = onTopPickLongPress?.let { cb -> { cb(item) } },
                     modifier = Modifier
                         .width(196.dp)
                         .height(264.dp)
@@ -113,6 +116,7 @@ private fun TopPickEditorialCard(
     item: TopPickItem,
     accentColor: Color,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val jellyState = rememberJellyPressState()
@@ -130,6 +134,7 @@ private fun TopPickEditorialCard(
         shape = TopPickCardShape,
         jellyState = jellyState,
         onClick = onClick,
+        onLongClick = onLongClick,
         modifier = modifier,
         elevation = 10.dp,
         containerColor = Color(0xFF131620)

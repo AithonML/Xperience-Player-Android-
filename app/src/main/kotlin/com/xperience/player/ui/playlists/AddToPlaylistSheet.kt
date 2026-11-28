@@ -309,7 +309,7 @@ fun AddToPlaylistSheet(
                         .height(240.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(playlists, key = { it.id }) { playlist ->
+                    items(playlists, key = { it.id }, contentType = { "playlist_option" }) { playlist ->
                         val isAlreadyInPlaylist = playlist.tracks.any { it.id == track.id }
                         val interactionSource = remember { MutableInteractionSource() }
 

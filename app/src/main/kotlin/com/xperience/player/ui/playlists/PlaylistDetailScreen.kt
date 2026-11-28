@@ -15,7 +15,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,7 +49,10 @@ import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.PlayCircle
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -143,7 +148,10 @@ fun PlaylistDetailScreen(
     onTrackMoreClick: ((TrackItem) -> Unit)? = null,
     showBackButton: Boolean = true,
     isSavedInLibrary: Boolean = !playlist.isSmartSuggestion,
-    onSaveToLibraryClick: (() -> Unit)? = null
+    onSaveToLibraryClick: (() -> Unit)? = null,
+    isYtmSignedIn: Boolean = false,
+    isRefreshingImportedPlaylist: Boolean = false,
+    onRefreshImportedPlaylistClick: (() -> Unit)? = null
 ) {
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
@@ -222,7 +230,7 @@ fun PlaylistDetailScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.fillMaxSize()
             ) {
-                item(key = "playlist_hero") {
+                item(key = "playlist_hero", contentType = "playlist_hero") {
                     PlaylistDetailHeroSection(
                         playlist = playlist,
                         accentColor = accentColor,
@@ -234,7 +242,7 @@ fun PlaylistDetailScreen(
                 }
 
                 if (playlist.tracks.isEmpty()) {
-                    item(key = "playlist_empty_tracks") {
+                    item(key = "playlist_empty_tracks", contentType = "empty_state") {
                         PlaylistTracksEmptyCard(
                             accentColor = accentColor,
                             modifier = Modifier
@@ -243,7 +251,7 @@ fun PlaylistDetailScreen(
                         )
                     }
                 } else {
-                    item(key = "playlist_tracks_header") {
+                    item(key = "playlist_tracks_header", contentType = "section_header") {
                         PlaylistTracksSectionHeader(
                             trackCount = playlist.tracks.size,
                             durationLabel = playlist.formattedDuration,
@@ -254,7 +262,8 @@ fun PlaylistDetailScreen(
 
                     itemsIndexed(
                         items = playlist.tracks,
-                        key = { index, track -> "pl_track_${index}_${track.id}" }
+                        key = { index, track -> "pl_track_${index}_${track.id}" },
+                        contentType = { _, _ -> "playlist_track_row" }
                     ) { index, track ->
                         val isPlayingThis = track.id == currentPlayingTrackId
                         val isLiked = likedTrackIds.contains(track.id)
@@ -418,6 +427,33 @@ fun PlaylistDetailScreen(
                         }
                     } else {
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (playlist.isFromYouTubeMusic && isYtmSignedIn && onRefreshImportedPlaylistClick != null) {
+                                GlassCircleButton(
+                                    onClick = {
+                                        if (!isRefreshingImportedPlaylist) {
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            onRefreshImportedPlaylistClick()
+                                        }
+                                    },
+                                    size = 44.dp
+                                ) {
+                                    if (isRefreshingImportedPlaylist) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp,
+                                            color = if (isDark) Color.White else appColors.glassTextPrimary
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Refresh,
+                                            contentDescription = "Refresh from YouTube Music",
+                                            tint = if (isDark) Color.White else appColors.glassTextPrimary,
+                                            modifier = Modifier.size(19.dp)
+                                        )
+                                    }
+                                }
+                            }
+
                             GlassCircleButton(
                                 onClick = {
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -442,7 +478,7 @@ fun PlaylistDetailScreen(
                             ) {
                                 Icon(
                                     imageVector = Icons.Rounded.DeleteOutline,
-                                    contentDescription = "Delete playlist",
+                                    contentDescription = if (playlist.isFromYouTubeMusic) "Remove from app" else "Delete playlist",
                                     tint = deleteTint,
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -468,6 +504,7 @@ private fun PlaylistDetailHeroSection(
     val isDark = appColors.isDark
     val haptic = LocalHapticFeedback.current
     val hasTracks = playlist.tracks.isNotEmpty()
+    val ytmRed = if (isDark) YouTubeMusicBrandRedDark else YouTubeMusicBrandRedLight
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -548,29 +585,60 @@ private fun PlaylistDetailHeroSection(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Metadata badge
-        Box(
-            modifier = Modifier
-                .clip(DetailPillShape)
-                .background(
-                    if (isDark) Color.White.copy(alpha = 0.07f)
-                    else appColors.textPrimary.copy(alpha = 0.06f)
-                )
-                .border(
-                    0.65.dp,
-                    if (isDark) Color.White.copy(alpha = 0.12f)
-                    else appColors.textPrimary.copy(alpha = 0.09f),
-                    DetailPillShape
-                )
-                .padding(horizontal = 13.dp, vertical = 5.dp)
+        // Metadata & YouTube Music source badges
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = playlist.summarySubtitle,
-                fontFamily = PlusJakartaSans,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 12.sp,
-                color = appColors.textSecondary
-            )
+            if (playlist.isFromYouTubeMusic) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    modifier = Modifier
+                        .clip(DetailPillShape)
+                        .background(ytmRed.copy(alpha = if (isDark) 0.16f else 0.11f))
+                        .border(0.75.dp, ytmRed.copy(alpha = 0.45f), DetailPillShape)
+                        .padding(horizontal = 11.dp, vertical = 5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayCircle,
+                        contentDescription = null,
+                        tint = ytmRed,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "YouTube Music",
+                        fontFamily = PlusJakartaSans,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        color = ytmRed
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .clip(DetailPillShape)
+                    .background(
+                        if (isDark) Color.White.copy(alpha = 0.07f)
+                        else appColors.textPrimary.copy(alpha = 0.06f)
+                    )
+                    .border(
+                        0.65.dp,
+                        if (isDark) Color.White.copy(alpha = 0.12f)
+                        else appColors.textPrimary.copy(alpha = 0.09f),
+                        DetailPillShape
+                    )
+                    .padding(horizontal = 13.dp, vertical = 5.dp)
+            ) {
+                Text(
+                    text = playlist.summarySubtitle,
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    color = appColors.textSecondary
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -914,13 +982,20 @@ private fun PlaylistTrackRow(
                     Modifier
                 }
             )
-            .clickable(
+            .combinedClickable(
                 interactionSource = rowJelly.interactionSource,
-                indication = ripple(bounded = true)
-            ) {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                onTrackClick()
-            }
+                indication = ripple(bounded = true),
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onTrackClick()
+                },
+                onLongClick = onMoreClick?.let { cb ->
+                    {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        cb()
+                    }
+                }
+            )
             .padding(horizontal = 10.dp, vertical = 9.dp)
     ) {
         // Index or animated playing equalizer

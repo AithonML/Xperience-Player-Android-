@@ -9,6 +9,7 @@ import com.xperience.player.domain.model.YtmAccountState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.security.KeyStore
 import java.security.MessageDigest
@@ -187,7 +188,8 @@ data class YtmAuthSession(
 class YouTubeAuthManager(
     private val store: AuthPrefsStore,
     private val cipher: SecretCipher,
-    private val clockMs: () -> Long = { System.currentTimeMillis() }
+    private val clockMs: () -> Long = { System.currentTimeMillis() },
+    hydrateAsync: Boolean = false
 ) {
 
     constructor(
@@ -199,12 +201,15 @@ class YouTubeAuthManager(
             context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         ),
         cipher = cipher,
-        clockMs = clockMs
+        clockMs = clockMs,
+        hydrateAsync = true
     )
 
     private val lock = Any()
     @Volatile
     private var currentSession: YtmAuthSession? = null
+    @Volatile
+    private var isHydrated: Boolean = false
 
     private val _accountState = MutableStateFlow(YtmAccountState())
     val accountState: StateFlow<YtmAccountState> = _accountState.asStateFlow()
@@ -213,8 +218,25 @@ class YouTubeAuthManager(
     val shouldShowLoginPrompt: StateFlow<Boolean> = _shouldShowLoginPrompt.asStateFlow()
 
     init {
-        loadSessionFromStore()
-        refreshPromptState()
+        if (hydrateAsync) {
+            kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+            ).launch {
+                ensureHydrated()
+            }
+        } else {
+            ensureHydrated()
+        }
+    }
+
+    private fun ensureHydrated() {
+        if (isHydrated) return
+        synchronized(lock) {
+            if (isHydrated) return
+            loadSessionFromStore()
+            refreshPromptState()
+            isHydrated = true
+        }
     }
 
     private fun safeLog(message: String) {
@@ -392,6 +414,7 @@ class YouTubeAuthManager(
         timestampSeconds: Long = clockMs() / 1000L,
         includePageId: Boolean = true
     ): Map<String, String> {
+        ensureHydrated()
         val session = currentSession ?: return emptyMap()
         if (!hasYouTubeAccountSession(session.cookie)) return emptyMap()
 

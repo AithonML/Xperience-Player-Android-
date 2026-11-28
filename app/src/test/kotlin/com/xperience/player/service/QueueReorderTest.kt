@@ -197,4 +197,47 @@ class QueueReorderTest {
         assertEquals(1, snap.currentIndex)
         assertEquals("Second", snap.currentTrack?.title)
     }
+
+    @Test
+    fun shuffleAndUnshuffleRestoresExactCanonicalOrderAndActiveIndex() {
+        val controller = PlaybackQueueController()
+        val original = (0 until 8).map { track("t$it") }
+        controller.setQueue(original, startIndex = 3) // Active = t3 at canonical index 3
+
+        val shuffled = controller.setShuffleEnabled(true, random = kotlin.random.Random(42))
+        assertTrue(controller.isShuffleEnabled())
+        assertEquals("t3", shuffled.currentTrack?.id)
+        assertEquals(0, shuffled.currentIndex)
+        assertEquals(original.map { it.id }.toSet(), shuffled.queue.map { it.id }.toSet())
+        // Canonical order remained untouched while shuffled
+        assertEquals(original.map { it.id }, controller.canonicalQueue().map { it.id })
+
+        val restored = controller.setShuffleEnabled(false)
+        assertFalse(controller.isShuffleEnabled())
+        assertEquals(original.map { it.id }, restored.queue.map { it.id })
+        assertEquals(3, restored.currentIndex)
+        assertEquals("t3", restored.currentTrack?.id)
+    }
+
+    @Test
+    fun sessionStoreSerializationPreservesQueueCanonicalOrderAndPosition() {
+        val queue = listOf(track("t2"), track("t0"), track("t1"))
+        val canonical = listOf(track("t0"), track("t1"), track("t2"))
+        val snapshot = PersistedPlaybackSession(
+            queue = queue,
+            canonicalQueue = canonical,
+            currentQueueIndex = 0,
+            isShuffleEnabled = true,
+            positionMs = 47_500L,
+            savedAtMs = 1_750_000_000_000L
+        )
+
+        val json = PlaybackSessionStore.serializeSessionToJson(snapshot)
+        val parsed = PlaybackSessionStore.parseSessionFromJson(json)
+        assertEquals(queue.map { it.id }, parsed?.queue?.map { it.id })
+        assertEquals(canonical.map { it.id }, parsed?.canonicalQueue?.map { it.id })
+        assertEquals(0, parsed?.currentQueueIndex)
+        assertEquals(true, parsed?.isShuffleEnabled)
+        assertEquals(47_500L, parsed?.positionMs)
+    }
 }

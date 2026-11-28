@@ -14,9 +14,11 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -30,6 +32,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -44,7 +47,13 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.BookmarkAdded
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.PlayCircle
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -54,6 +63,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -127,17 +137,30 @@ fun PlaylistsScreen(
     applyStatusBarsPadding: Boolean = false,
     selectedPlaylistId: String? = null,
     suggestedPlaylists: List<UserPlaylist> = emptyList(),
-    onSaveSuggestedPlaylist: (UserPlaylist) -> Unit = {}
+    onSaveSuggestedPlaylist: (UserPlaylist) -> Unit = {},
+    isYtmSignedIn: Boolean = false,
+    onImportYtmPlaylistsClick: () -> Unit = {},
+    onRequestDeletePlaylist: ((UserPlaylist) -> Unit)? = null,
+    statusMessage: String? = null,
+    onDismissStatusMessage: () -> Unit = {}
 ) {
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
     val accentColor = readableAccentColor(LocalAccentColor.current, isDark)
     val density = LocalDensity.current
     val topChromePadding = LocalTopChromePadding.current
+    val bottomChromePadding = LocalBottomChromePadding.current
 
     val totalTracks = remember(playlists) { playlists.sumOf { it.tracks.size } }
     val totalDurationText = remember(playlists) {
         formatPlaylistsTotalDuration(playlists.sumOf { it.totalDurationMs })
+    }
+
+    LaunchedEffect(statusMessage) {
+        if (!statusMessage.isNullOrBlank()) {
+            delay(3600L)
+            onDismissStatusMessage()
+        }
     }
 
     val playlistsBackdrop = rememberLayerBackdrop()
@@ -212,7 +235,9 @@ fun PlaylistsScreen(
                     PlaylistsEmptyState(
                         accentColor = accentColor,
                         topPadding = headerHeightDp + 16.dp,
-                        onCreatePlaylistClick = onCreatePlaylistClick
+                        onCreatePlaylistClick = onCreatePlaylistClick,
+                        isYtmSignedIn = isYtmSignedIn,
+                        onImportYtmPlaylistsClick = onImportYtmPlaylistsClick
                     )
                 } else {
                     PlaylistsGridContent(
@@ -222,10 +247,13 @@ fun PlaylistsScreen(
                         topContentPadding = headerHeightDp + 12.dp,
                         accentColor = accentColor,
                         selectedPlaylistId = selectedPlaylistId,
+                        isYtmSignedIn = isYtmSignedIn,
                         onPlaylistClick = onPlaylistClick,
                         onPlayPlaylistClick = onPlayPlaylistClick,
                         onSaveSuggestedPlaylist = onSaveSuggestedPlaylist,
-                        onCreatePlaylistClick = onCreatePlaylistClick
+                        onCreatePlaylistClick = onCreatePlaylistClick,
+                        onImportYtmPlaylistsClick = onImportYtmPlaylistsClick,
+                        onRequestDeletePlaylist = onRequestDeletePlaylist
                     )
                 }
             }
@@ -268,12 +296,53 @@ fun PlaylistsScreen(
                     accentColor = accentColor,
                     isScrolled = isScrolled,
                     applyStatusBarsPadding = applyStatusBarsPadding,
+                    isYtmSignedIn = isYtmSignedIn,
+                    onImportYtmPlaylistsClick = onImportYtmPlaylistsClick,
                     onCreatePlaylistClick = onCreatePlaylistClick,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .fillMaxWidth()
                         .onSizeChanged { headerHeightPx = it.height }
                 )
+
+                if (!statusMessage.isNullOrBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(horizontal = 20.dp)
+                            .padding(bottom = bottomChromePadding + 12.dp)
+                            .shadow(12.dp, PlaylistPillShape)
+                            .clip(PlaylistPillShape)
+                            .background(
+                                if (isDark) Color(0xEE181C26) else Color(0xF2FFFFFF)
+                            )
+                            .border(
+                                0.9.dp,
+                                accentColor.copy(alpha = 0.45f),
+                                PlaylistPillShape
+                            )
+                            .clickable { onDismissStatusMessage() }
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.CheckCircle,
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier.size(17.dp)
+                        )
+                        Text(
+                            text = statusMessage,
+                            fontFamily = GoogleSans,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.5.sp,
+                            color = appColors.textPrimary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
         }
     }
@@ -287,6 +356,8 @@ private fun PlaylistsFloatingHeader(
     accentColor: Color,
     isScrolled: Boolean,
     applyStatusBarsPadding: Boolean,
+    isYtmSignedIn: Boolean,
+    onImportYtmPlaylistsClick: () -> Unit,
     onCreatePlaylistClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -295,6 +366,7 @@ private fun PlaylistsFloatingHeader(
     val glassConfig = LocalGlassEffectConfig.current
     val useGlass = glassConfig.isEnabledFor(GlassComponent.NAV_BAR) && isGlassAllowed()
     val haptic = LocalHapticFeedback.current
+    val ytmRed = if (isDark) YouTubeMusicBrandRedDark else YouTubeMusicBrandRedLight
 
     val subtitleText = when {
         playlistCount == 0 -> "Curate your personal collections"
@@ -307,6 +379,7 @@ private fun PlaylistsFloatingHeader(
     }
 
     val createInteraction = remember { MutableInteractionSource() }
+    val importInteraction = remember { MutableInteractionSource() }
     val createElevation by animateDpAsState(
         targetValue = if (isScrolled) 10.dp else 4.dp,
         animationSpec = tween(220),
@@ -322,13 +395,13 @@ private fun PlaylistsFloatingHeader(
             .padding(top = topChromePadding)
             .padding(top = 10.dp, bottom = 6.dp)
     ) {
-        // Right margin keeps clear of HomeScreen's top-right Settings GlassCircleButton on Compact/Medium
+        // Right margin keeps clear of HomeScreen's top-right unified Cast + Settings LiquidGlass pill on Compact/Medium
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
                     start = 20.dp,
-                    end = if (windowSizeClass.usesTopDesktopChrome) 20.dp else 68.dp
+                    end = if (windowSizeClass.usesTopDesktopChrome) 20.dp else 112.dp
                 )
         ) {
             Text(
@@ -356,154 +429,235 @@ private fun PlaylistsFloatingHeader(
         Spacer(modifier = Modifier.height(12.dp))
 
         // Floating glass action & metadata strip below the Settings button height
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Frosted/LiquidGlass collection readout pill
-            val infoBorderColor = if (isDark) {
-                Color.White.copy(alpha = 0.14f)
-            } else {
-                appColors.textPrimary.copy(alpha = 0.10f)
-            }
-            val infoModifier = Modifier
-                .height(38.dp)
-                .then(
-                    if (useGlass) {
-                        Modifier.liquidGlass(
-                            config = glassConfig,
-                            shape = PlaylistPillShape,
-                            highlightAlpha = 0.16f
-                        )
-                    } else {
-                        Modifier
-                            .clip(PlaylistPillShape)
-                            .background(
-                                if (isDark) Color(0xFF1A1E29).copy(alpha = 0.86f)
-                                else Color.White.copy(alpha = 0.86f)
-                            )
-                    }
-                )
-                .border(0.75.dp, infoBorderColor, PlaylistPillShape)
-                .padding(horizontal = 13.dp)
-
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val viewportWidth = maxWidth
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = infoModifier
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .widthIn(min = viewportWidth)
+                    .padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.PlaylistPlay,
-                    contentDescription = null,
-                    tint = accentColor,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = if (totalTracks > 0) totalDurationText else "Ready to mix",
-                    fontFamily = PlusJakartaSans,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 12.sp,
-                    color = if (useGlass) appColors.glassTextPrimary else appColors.textPrimary,
-                    maxLines = 1
-                )
-            }
-
-            // Polished LiquidGlass "New Playlist" CTA pill with press wobble
-            val ctaInk = if (useGlass) appColors.glassTextPrimary else onAccentColor(accentColor)
-            val ctaModifier = Modifier
-                .pressWobble(createInteraction, pressedScale = 0.91f)
-                .height(38.dp)
-                .shadow(
-                    elevation = createElevation,
-                    shape = PlaylistPillShape,
-                    ambientColor = accentColor.copy(alpha = 0.35f),
-                    spotColor = accentColor.copy(alpha = 0.45f)
-                )
-                .then(
-                    if (useGlass) {
-                        Modifier
-                            .liquidGlass(
+                // Frosted/LiquidGlass collection readout pill
+                val infoBorderColor = if (isDark) {
+                    Color.White.copy(alpha = 0.14f)
+                } else {
+                    appColors.textPrimary.copy(alpha = 0.10f)
+                }
+                val infoModifier = Modifier
+                    .height(36.dp)
+                    .then(
+                        if (useGlass) {
+                            Modifier.liquidGlass(
                                 config = glassConfig,
                                 shape = PlaylistPillShape,
-                                highlightAlpha = 0.24f
+                                highlightAlpha = 0.16f
                             )
-                            .background(
-                                accentColor.copy(alpha = if (isDark) 0.22f else 0.16f),
-                                PlaylistPillShape
-                            )
-                            .border(
-                                0.85.dp,
-                                Brush.linearGradient(
-                                    listOf(
-                                        Color.White.copy(alpha = if (isDark) 0.32f else 0.65f),
-                                        accentColor.copy(alpha = 0.40f)
-                                    )
-                                ),
-                                PlaylistPillShape
-                            )
-                    } else {
-                        Modifier
-                            .clip(PlaylistPillShape)
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(accentColor, accentColor.copy(alpha = 0.84f))
+                        } else {
+                            Modifier
+                                .clip(PlaylistPillShape)
+                                .background(
+                                    if (isDark) Color(0xFF1A1E29).copy(alpha = 0.86f)
+                                    else Color.White.copy(alpha = 0.86f)
                                 )
-                            )
-                            .border(
-                                0.8.dp,
-                                Color.White.copy(alpha = if (isDark) 0.28f else 0.45f),
-                                PlaylistPillShape
-                            )
-                    }
-                )
-                .clickable(
-                    interactionSource = createInteraction,
-                    indication = ripple(bounded = true)
-                ) {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onCreatePlaylistClick()
-                }
-                .padding(horizontal = 14.dp)
+                        }
+                    )
+                    .border(0.75.dp, infoBorderColor, PlaylistPillShape)
+                    .padding(horizontal = 10.dp)
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = ctaModifier
-            ) {
-                if (useGlass) {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .size(20.dp)
-                            .clip(CircleShape)
-                            .background(accentColor)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Add,
-                            contentDescription = null,
-                            tint = onAccentColor(accentColor),
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
-                } else {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = infoModifier
+                ) {
                     Icon(
-                        imageVector = Icons.Rounded.Add,
+                        imageVector = Icons.AutoMirrored.Rounded.PlaylistPlay,
                         contentDescription = null,
-                        tint = ctaInk,
+                        tint = accentColor,
                         modifier = Modifier.size(16.dp)
                     )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = if (totalTracks > 0) totalDurationText else "Ready to mix",
+                        fontFamily = PlusJakartaSans,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        color = if (useGlass) appColors.glassTextPrimary else appColors.textPrimary,
+                        maxLines = 1,
+                        softWrap = false
+                    )
                 }
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "New Playlist",
-                    fontFamily = GoogleSans,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
-                    color = ctaInk,
-                    maxLines = 1
-                )
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isYtmSignedIn) {
+                        val importModifier = Modifier
+                            .pressWobble(importInteraction, pressedScale = 0.91f)
+                            .height(36.dp)
+                            .shadow(
+                                elevation = createElevation,
+                                shape = PlaylistPillShape,
+                                ambientColor = ytmRed.copy(alpha = 0.25f),
+                                spotColor = ytmRed.copy(alpha = 0.35f)
+                            )
+                            .then(
+                                if (useGlass) {
+                                    Modifier
+                                        .liquidGlass(
+                                            config = glassConfig,
+                                            shape = PlaylistPillShape,
+                                            highlightAlpha = 0.20f
+                                        )
+                                        .background(
+                                            ytmRed.copy(alpha = if (isDark) 0.18f else 0.12f),
+                                            PlaylistPillShape
+                                        )
+                                        .border(
+                                            0.85.dp,
+                                            ytmRed.copy(alpha = 0.48f),
+                                            PlaylistPillShape
+                                        )
+                                } else {
+                                    Modifier
+                                        .clip(PlaylistPillShape)
+                                        .background(
+                                            if (isDark) Color(0xFF2B1720) else Color(0xFFFFEEF1)
+                                        )
+                                        .border(0.85.dp, ytmRed.copy(alpha = 0.45f), PlaylistPillShape)
+                                }
+                            )
+                            .clickable(
+                                interactionSource = importInteraction,
+                                indication = ripple(bounded = true)
+                            ) {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onImportYtmPlaylistsClick()
+                            }
+                            .padding(horizontal = 10.dp)
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = importModifier
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.PlayCircle,
+                                contentDescription = "Import YouTube Music playlists",
+                                tint = ytmRed,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Import",
+                                fontFamily = GoogleSans,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp,
+                                color = if (useGlass) appColors.glassTextPrimary else appColors.textPrimary,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    // Polished LiquidGlass "New Playlist" CTA pill with press wobble
+                    val ctaInk = if (useGlass) appColors.glassTextPrimary else onAccentColor(accentColor)
+                    val ctaModifier = Modifier
+                        .pressWobble(createInteraction, pressedScale = 0.91f)
+                        .height(36.dp)
+                        .shadow(
+                            elevation = createElevation,
+                            shape = PlaylistPillShape,
+                            ambientColor = accentColor.copy(alpha = 0.35f),
+                            spotColor = accentColor.copy(alpha = 0.45f)
+                        )
+                        .then(
+                            if (useGlass) {
+                                Modifier
+                                    .liquidGlass(
+                                        config = glassConfig,
+                                        shape = PlaylistPillShape,
+                                        highlightAlpha = 0.24f
+                                    )
+                                    .background(
+                                        accentColor.copy(alpha = if (isDark) 0.22f else 0.16f),
+                                        PlaylistPillShape
+                                    )
+                                    .border(
+                                        0.85.dp,
+                                        Brush.linearGradient(
+                                            listOf(
+                                                Color.White.copy(alpha = if (isDark) 0.32f else 0.65f),
+                                                accentColor.copy(alpha = 0.40f)
+                                            )
+                                        ),
+                                        PlaylistPillShape
+                                    )
+                            } else {
+                                Modifier
+                                    .clip(PlaylistPillShape)
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(accentColor, accentColor.copy(alpha = 0.84f))
+                                        )
+                                    )
+                                    .border(
+                                        0.8.dp,
+                                        Color.White.copy(alpha = if (isDark) 0.28f else 0.45f),
+                                        PlaylistPillShape
+                                    )
+                            }
+                        )
+                        .clickable(
+                            interactionSource = createInteraction,
+                            indication = ripple(bounded = true)
+                        ) {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onCreatePlaylistClick()
+                        }
+                        .padding(horizontal = 11.dp)
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = ctaModifier
+                    ) {
+                        if (useGlass) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(19.dp)
+                                    .clip(CircleShape)
+                                    .background(accentColor)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Add,
+                                    contentDescription = null,
+                                    tint = onAccentColor(accentColor),
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
+                        } else {
+                            Icon(
+                                imageVector = Icons.Rounded.Add,
+                                contentDescription = null,
+                                tint = ctaInk,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = "New Playlist",
+                            fontFamily = GoogleSans,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp,
+                            color = ctaInk,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
             }
         }
     }
@@ -517,10 +671,13 @@ private fun PlaylistsGridContent(
     topContentPadding: Dp,
     accentColor: Color,
     selectedPlaylistId: String?,
+    isYtmSignedIn: Boolean,
     onPlaylistClick: (UserPlaylist) -> Unit,
     onPlayPlaylistClick: (UserPlaylist) -> Unit,
     onSaveSuggestedPlaylist: (UserPlaylist) -> Unit,
-    onCreatePlaylistClick: () -> Unit
+    onCreatePlaylistClick: () -> Unit,
+    onImportYtmPlaylistsClick: () -> Unit,
+    onRequestDeletePlaylist: ((UserPlaylist) -> Unit)?
 ) {
     val windowSizeClass = LocalAppWindowSizeClass.current
     val bottomChromePadding = LocalBottomChromePadding.current
@@ -547,7 +704,8 @@ private fun PlaylistsGridContent(
         if (suggestedPlaylists.isNotEmpty()) {
             item(
                 key = "suggested_smart_playlists_section",
-                span = { GridItemSpan(maxLineSpan) }
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "suggested_banner"
             ) {
                 SuggestedSmartPlaylistsBannerSection(
                     suggestedPlaylists = suggestedPlaylists,
@@ -562,7 +720,8 @@ private fun PlaylistsGridContent(
 
             item(
                 key = "saved_playlists_section_header",
-                span = { GridItemSpan(maxLineSpan) }
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "section_header"
             ) {
                 Row(
                     modifier = Modifier
@@ -592,18 +751,22 @@ private fun PlaylistsGridContent(
         if (playlists.isEmpty()) {
             item(
                 key = "saved_playlists_empty_inline",
-                span = { GridItemSpan(maxLineSpan) }
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "empty_state"
             ) {
                 PlaylistsEmptyState(
                     accentColor = accentColor,
                     topPadding = 8.dp,
-                    onCreatePlaylistClick = onCreatePlaylistClick
+                    onCreatePlaylistClick = onCreatePlaylistClick,
+                    isYtmSignedIn = isYtmSignedIn,
+                    onImportYtmPlaylistsClick = onImportYtmPlaylistsClick
                 )
             }
         } else {
             itemsIndexed(
                 items = playlists,
-                key = { _, playlist -> playlist.id }
+                key = { _, playlist -> playlist.id },
+                contentType = { _, _ -> "playlist_grid_card" }
             ) { index, playlist ->
                 PlaylistGridCard(
                     playlist = playlist,
@@ -612,6 +775,7 @@ private fun PlaylistsGridContent(
                     isSelected = selectedPlaylistId == playlist.id,
                     onClick = { onPlaylistClick(playlist) },
                     onPlayClick = { onPlayPlaylistClick(playlist) },
+                    onDeleteClick = onRequestDeletePlaylist?.let { cb -> { cb(playlist) } },
                     modifier = Modifier.animateItem(
                         fadeInSpec = tween(260),
                         fadeOutSpec = tween(180),
@@ -646,9 +810,10 @@ private fun SuggestedSmartPlaylistsBannerSection(
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
+                modifier = Modifier.weight(1f),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -666,20 +831,24 @@ private fun SuggestedSmartPlaylistsBannerSection(
                         modifier = Modifier.size(16.dp)
                     )
                 }
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Suggested for You",
                         fontFamily = GoogleSans,
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.5.sp,
-                        color = appColors.textPrimary
+                        color = appColors.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "Generated from your listening history • Save to keep them",
                         fontFamily = PlusJakartaSans,
                         fontWeight = FontWeight.Medium,
                         fontSize = 11.5.sp,
-                        color = appColors.textSecondary
+                        color = appColors.textSecondary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -696,7 +865,9 @@ private fun SuggestedSmartPlaylistsBannerSection(
                     fontFamily = GoogleSans,
                     fontWeight = FontWeight.Bold,
                     fontSize = 10.5.sp,
-                    color = accentColor
+                    color = accentColor,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         }
@@ -708,7 +879,8 @@ private fun SuggestedSmartPlaylistsBannerSection(
         ) {
             items(
                 items = suggestedPlaylists,
-                key = { it.id }
+                key = { it.id },
+                contentType = { "suggested_playlist_card" }
             ) { suggestion ->
                 val isSaved = savedTitles.contains(suggestion.title.trim().lowercase())
                 val isSelected = selectedPlaylistId == suggestion.id
@@ -893,12 +1065,14 @@ private fun PlaylistGridCard(
     isSelected: Boolean = false,
     onClick: () -> Unit,
     onPlayClick: () -> Unit,
+    onDeleteClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
     val haptic = LocalHapticFeedback.current
     val cardJelly = rememberJellyPressState(pressedScaleX = 0.945f, pressedScaleY = 0.925f)
+    var isMenuExpanded by remember { mutableStateOf(false) }
 
     // Subtle staggered entrance matching Home & Library grids
     val enterProgress = remember(playlist.id) { Animatable(0f) }
@@ -914,6 +1088,7 @@ private fun PlaylistGridCard(
 
     val containerColor = if (isDark) Color(0xFF1A1D28) else Color(0xFFEBEEF5)
     val trackBadgeLabel = if (playlist.tracks.size == 1) "1 track" else "${playlist.tracks.size} tracks"
+    val destructiveTint = if (isDark) Color(0xFFFF6B7A) else Color(0xFFD92D20)
 
     Column(
         modifier = modifier
@@ -981,6 +1156,20 @@ private fun PlaylistGridCard(
                     .padding(9.dp)
             )
 
+            // Clear YouTube Music source indicator pill for imported playlists
+            if (playlist.isFromYouTubeMusic) {
+                FrostedCardBadge(
+                    text = "YT Music",
+                    icon = Icons.Rounded.PlayCircle,
+                    containerColor = Color(0xCC990F22),
+                    contentColor = Color.White,
+                    borderColor = Color(0x88FF5C77),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(9.dp)
+                )
+            }
+
             // Quick-play circular badge with tactile press wobble
             if (playlist.tracks.isNotEmpty()) {
                 val playInteraction = remember { MutableInteractionSource() }
@@ -1024,27 +1213,109 @@ private fun PlaylistGridCard(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Metadata hierarchy below cover matching Home's AlbumCard
-        Column(modifier = Modifier.padding(horizontal = 3.dp)) {
-            Text(
-                text = playlist.title,
-                fontFamily = GoogleSans,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 14.5.sp,
-                color = appColors.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = playlist.description.ifBlank { playlist.summarySubtitle },
-                fontFamily = PlusJakartaSans,
-                fontWeight = FontWeight.Medium,
-                fontSize = 12.sp,
-                color = appColors.textSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+        // Metadata hierarchy below cover matching Home's AlbumCard + subtle overflow menu
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 3.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = playlist.title,
+                    fontFamily = GoogleSans,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.5.sp,
+                    color = appColors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = playlist.description.ifBlank { playlist.summarySubtitle },
+                    fontFamily = PlusJakartaSans,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.sp,
+                    color = appColors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (onDeleteClick != null) {
+                Box {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                isMenuExpanded = true
+                            }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.MoreVert,
+                            contentDescription = "Playlist options for ${playlist.title}",
+                            tint = appColors.textSecondary,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = isMenuExpanded,
+                        onDismissRequest = { isMenuExpanded = false },
+                        containerColor = if (isDark) Color(0xFF1C202B) else Color.White
+                    ) {
+                        if (playlist.tracks.isNotEmpty()) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Play",
+                                        fontFamily = GoogleSans,
+                                        fontWeight = FontWeight.Medium,
+                                        color = appColors.textPrimary
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.PlayArrow,
+                                        contentDescription = null,
+                                        tint = accentColor,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    isMenuExpanded = false
+                                    onPlayClick()
+                                }
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = if (playlist.isFromYouTubeMusic) "Remove from app" else "Delete playlist",
+                                    fontFamily = GoogleSans,
+                                    fontWeight = FontWeight.Medium,
+                                    color = destructiveTint
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.DeleteOutline,
+                                    contentDescription = null,
+                                    tint = destructiveTint,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            onClick = {
+                                isMenuExpanded = false
+                                onDeleteClick()
+                            }
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1053,12 +1324,16 @@ private fun PlaylistGridCard(
 private fun PlaylistsEmptyState(
     accentColor: Color,
     topPadding: Dp,
-    onCreatePlaylistClick: () -> Unit
+    onCreatePlaylistClick: () -> Unit,
+    isYtmSignedIn: Boolean = false,
+    onImportYtmPlaylistsClick: () -> Unit = {}
 ) {
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
     val haptic = LocalHapticFeedback.current
     val buttonInteraction = remember { MutableInteractionSource() }
+    val importInteraction = remember { MutableInteractionSource() }
+    val ytmRed = if (isDark) YouTubeMusicBrandRedDark else YouTubeMusicBrandRedLight
 
     val cardFill = if (isDark) {
         Color.White.copy(alpha = 0.055f)
@@ -1192,6 +1467,43 @@ private fun PlaylistsEmptyState(
                     color = ink
                 )
             }
+
+            if (isYtmSignedIn) {
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .pressWobble(importInteraction, pressedScale = 0.92f)
+                        .height(42.dp)
+                        .clip(PlaylistPillShape)
+                        .background(ytmRed.copy(alpha = if (isDark) 0.18f else 0.10f))
+                        .border(0.9.dp, ytmRed.copy(alpha = 0.45f), PlaylistPillShape)
+                        .clickable(
+                            interactionSource = importInteraction,
+                            indication = ripple(bounded = true)
+                        ) {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onImportYtmPlaylistsClick()
+                        }
+                        .padding(horizontal = 20.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayCircle,
+                        contentDescription = null,
+                        tint = ytmRed,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Import from YouTube Music",
+                        fontFamily = GoogleSans,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.5.sp,
+                        color = appColors.textPrimary
+                    )
+                }
+            }
         }
     }
 }
@@ -1214,7 +1526,9 @@ private fun formatPlaylistsTotalDuration(totalMs: Long): String {
 @Composable
 internal fun PlaylistsEmptyDetailPane(
     onCreatePlaylistClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isYtmSignedIn: Boolean = false,
+    onImportYtmPlaylistsClick: () -> Unit = {}
 ) {
     val appColors = LocalAppColors.current
     val accentColor = readableAccentColor(LocalAccentColor.current, appColors.isDark)
@@ -1227,7 +1541,9 @@ internal fun PlaylistsEmptyDetailPane(
         PlaylistsEmptyState(
             accentColor = accentColor,
             topPadding = LocalTopChromePadding.current,
-            onCreatePlaylistClick = onCreatePlaylistClick
+            onCreatePlaylistClick = onCreatePlaylistClick,
+            isYtmSignedIn = isYtmSignedIn,
+            onImportYtmPlaylistsClick = onImportYtmPlaylistsClick
         )
     }
 }

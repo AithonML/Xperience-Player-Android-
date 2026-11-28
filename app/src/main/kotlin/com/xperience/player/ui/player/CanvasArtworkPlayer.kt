@@ -89,6 +89,7 @@ fun CanvasArtworkPlayer(
     useDiskCache: Boolean = true,
     repeatVideo: Boolean = (syncPositionMs == null),
     constrainTrackQuality: Boolean = (syncPositionMs == null),
+    tightAudioSync: Boolean = false,
     onReady: () -> Unit = {},
     onError: () -> Unit = {}
 ) {
@@ -159,8 +160,17 @@ fun CanvasArtworkPlayer(
         if (playerHolder.disposed) return@LaunchedEffect
 
         val created = runCatching {
+            val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    /* minBufferMs = */ 2_500,
+                    /* maxBufferMs = */ 8_000,
+                    /* bufferForPlaybackMs = */ 500,
+                    /* bufferForPlaybackAfterRebufferMs = */ 1_000
+                )
+                .build()
             ExoPlayer.Builder(appContext)
                 .setMediaSourceFactory(mediaSourceFactory)
+                .setLoadControl(loadControl)
                 .build()
                 .apply {
                     trackSelectionParameters = trackSelectionParameters
@@ -249,7 +259,11 @@ fun CanvasArtworkPlayer(
                 return@runCatching
             }
             val nowMs = SystemClock.elapsedRealtime()
-            val shouldSeek = diff > 3_500L || (diff > 1_500L && nowMs - lastSeekWallClockMs >= 2_000L)
+            val shouldSeek = if (tightAudioSync) {
+                diff > 900L || (diff > 280L && nowMs - lastSeekWallClockMs >= 750L)
+            } else {
+                diff > 3_500L || (diff > 1_500L && nowMs - lastSeekWallClockMs >= 2_000L)
+            }
             if (shouldSeek) {
                 lastSeekWallClockMs = nowMs
                 player.seekTo(clampedTarget)

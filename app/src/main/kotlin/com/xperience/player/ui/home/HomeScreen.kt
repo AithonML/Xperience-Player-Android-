@@ -24,6 +24,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -38,13 +39,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.pullToRefresh
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.layout.AnimatedPane
 import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffold
@@ -56,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -98,7 +102,6 @@ import com.xperience.player.ui.cast.CastExpandedControlsSheet
 import com.xperience.player.ui.cast.CastMiniBanner
 import com.xperience.player.ui.ringtone.RingtoneEditorSheet
 import com.xperience.player.ui.component.DesktopTopNavBar
-import com.xperience.player.ui.component.GlassCircleButton
 import com.xperience.player.ui.component.GlassEffectConfig
 import com.xperience.player.ui.component.LocalAppBackdrop
 import com.xperience.player.ui.component.LocalGlassEffectConfig
@@ -124,6 +127,7 @@ import com.xperience.player.ui.components.DiscoverByGenreSection
 import com.xperience.player.ui.components.HeaderBar
 import com.xperience.player.ui.components.HomeAuroraBackground
 import com.xperience.player.ui.components.HomeFeedSkeletonScreen
+import com.xperience.player.ui.components.HomeTopRightCastSettingsPill
 import com.xperience.player.ui.components.MiniPlayerBar
 import com.xperience.player.ui.components.MoreLikeAlbumSectionRow
 import com.xperience.player.ui.components.NovedadesSection
@@ -140,9 +144,13 @@ import com.xperience.player.ui.library.LibrarySubView
 import com.xperience.player.ui.liked.LikedScreen
 import com.xperience.player.ui.playlists.AddToPlaylistSheet
 import com.xperience.player.ui.playlists.CreatePlaylistDialog
+import com.xperience.player.ui.playlists.ImportYouTubePlaylistsSheet
 import com.xperience.player.ui.playlists.PlaylistDetailScreen
 import com.xperience.player.ui.playlists.PlaylistsEmptyDetailPane
 import com.xperience.player.ui.playlists.PlaylistsScreen
+import com.xperience.player.ui.playlists.RemovePlaylistDialog
+import com.xperience.player.ui.components.AlbumOptionsMenuSheet
+import com.xperience.player.ui.components.ArtistOptionsMenuSheet
 import com.xperience.player.ui.components.TrackOptionsMenuSheet
 import com.xperience.player.ui.player.DownloadConfirmationModal
 import com.xperience.player.ui.player.NowPlayingScreen
@@ -151,7 +159,7 @@ import com.xperience.player.ui.player.NowPlayingSidebarDefaults
 import com.xperience.player.ui.player.NowPlayingSidebarTab
 import com.xperience.player.service.update.ApkInstaller
 import com.xperience.player.ui.search.SearchScreen
-import com.xperience.player.ui.settings.SettingsSheet
+import com.xperience.player.ui.settings.SettingsScreen
 import com.xperience.player.ui.settings.UpdateDialog
 import com.xperience.player.ui.settings.YouTubeLoginSheet
 import kotlin.coroutines.cancellation.CancellationException
@@ -217,6 +225,16 @@ fun HomeScreen(
     val isYtmLoginSheetOpen by viewModel.isYtmLoginSheetOpen.collectAsState()
     val isSyncingYtmAccount by viewModel.isSyncingYtmAccount.collectAsState()
     val ytmLoginError by viewModel.ytmLoginError.collectAsState()
+    val isYtmPlaylistImportOpen by viewModel.isYtmPlaylistImportOpen.collectAsState()
+    val isLoadingYtmLibraryPlaylists by viewModel.isLoadingYtmLibraryPlaylists.collectAsState()
+    val ytmLibraryPlaylists by viewModel.ytmLibraryPlaylists.collectAsState()
+    val selectedYtmPlaylistIds by viewModel.selectedYtmPlaylistIds.collectAsState()
+    val isImportingYtmPlaylists by viewModel.isImportingYtmPlaylists.collectAsState()
+    val ytmImportProgressText by viewModel.ytmImportProgressText.collectAsState()
+    val ytmImportError by viewModel.ytmImportError.collectAsState()
+    val ytmImportStatusMessage by viewModel.ytmImportStatusMessage.collectAsState()
+    val playlistPendingDelete by viewModel.playlistPendingDelete.collectAsState()
+    val isRefreshingImportedPlaylist by viewModel.isRefreshingImportedPlaylist.collectAsState()
     val homeGridCategory by viewModel.homeGridCategory.collectAsState()
     val isHomeGridOpen = homeGridCategory != null
     var lastHomeGridCategory by remember { mutableStateOf(homeGridCategory) }
@@ -268,6 +286,7 @@ fun HomeScreen(
     val currentLyricsProviderName by viewModel.currentLyricsProviderName.collectAsState()
     val lyricsProviders by viewModel.lyricsProviders.collectAsState()
     val currentCanvasArtwork by viewModel.currentCanvasArtwork.collectAsState()
+    val officialMusicVideoMetadata by viewModel.officialMusicVideoMetadata.collectAsState()
     val currentMusicVideo by viewModel.currentMusicVideo.collectAsState()
     val isResolvingMusicVideo by viewModel.isResolvingMusicVideo.collectAsState()
     val playerMediaMode by viewModel.playerMediaMode.collectAsState()
@@ -280,6 +299,14 @@ fun HomeScreen(
 
     val autoCheckUpdates by viewModel.autoCheckUpdates.collectAsState()
     val updateUiState by viewModel.updateUiState.collectAsState()
+    val playbackPreferences by viewModel.playbackPreferences.collectAsState()
+    val currentTrackPlaybackInfo by viewModel.currentTrackPlaybackInfo.collectAsState()
+    val inspectedSongInfo by viewModel.inspectedSongInfo.collectAsState()
+    val dataUsageSummary by viewModel.dataUsageSummary.collectAsState()
+    val localScanFilterConfig by viewModel.localScanFilterConfig.collectAsState()
+    val isDataUsageSheetOpen by viewModel.isDataUsageSheetOpen.collectAsState()
+    val trackForSongInfo by viewModel.trackForSongInfo.collectAsState()
+    val trackForDownload by viewModel.trackForDownload.collectAsState()
     val unknownSourcesLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
@@ -314,8 +341,11 @@ fun HomeScreen(
     val playlistToEdit by viewModel.playlistToEdit.collectAsState()
     val trackForAddToPlaylist by viewModel.trackForAddToPlaylist.collectAsState()
     val trackForOptionsMenu by viewModel.trackForOptionsMenu.collectAsState()
+    val trackOptionsRemoveAction by viewModel.trackOptionsRemoveAction.collectAsState()
+    val albumForOptionsMenu by viewModel.albumForOptionsMenu.collectAsState()
+    val artistForOptionsMenu by viewModel.artistForOptionsMenu.collectAsState()
 
-    val scrollState = rememberScrollState()
+    val homeListState = rememberLazyListState()
 
     var predictiveBackProgress by remember { mutableFloatStateOf(0f) }
 
@@ -591,7 +621,7 @@ fun HomeScreen(
                 effectiveArtistProgress = effectiveArtistProgress,
                 effectivePlaylistProgress = effectivePlaylistProgress,
                 effectiveGridProgress = effectiveGridProgress
-            )
+            ) || isPlayerExpanded || playerExpandProgress > 0.001f || isAmbientModeOpen || isSettingsOpen
             val overlayFreezeRef = remember { BooleanArray(1) }
             overlayFreezeRef[0] = overlayFreezeActive
             val isAppBackdropFrozen = remember(backdropFreeze, overlayFreezeRef) {
@@ -604,74 +634,115 @@ fun HomeScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer()
                     .layerBackdrop(
                         appBackdrop,
                         frozen = isAppBackdropFrozen
                     )
-                    .graphicsLayer()
                     .nestedScroll(backdropFreeze.connection)
             ) {
                 Box(modifier = Modifier.fillMaxSize().zIndex(0f)) {
                     when (selectedTab) {
                             NavigationTab.Home -> {
-                                Box(modifier = Modifier.fillMaxSize()) {
+                                val showYtmBanner = shouldDisplayYtmLoginBanner(
+                                    accountState = ytmAccountState,
+                                    shouldShowPrompt = shouldShowYtmLoginPrompt
+                                )
+                                val homeSmartPlaylists = smartSuggestedPlaylists.ifEmpty { feed.smartSuggestedPlaylists }
+                                val moreLikeSections = remember(feed.moreLikeSections) {
+                                    feed.moreLikeSections.filter { it.albums.isNotEmpty() }
+                                }
+                                val moreLike1 = moreLikeSections.getOrNull(0)
+                                val moreLike2 = moreLikeSections.getOrNull(1)
+                                val moreLike3 = moreLikeSections.getOrNull(2)
+
+                                val homePullToRefreshState = rememberPullToRefreshState()
+                                var isHomePullRefreshing by remember { mutableStateOf(false) }
+                                var hasSeenFeedLoadingDuringPull by remember { mutableStateOf(false) }
+                                LaunchedEffect(isHomePullRefreshing, feed.isFeedLoading) {
+                                    if (!isHomePullRefreshing) {
+                                        hasSeenFeedLoadingDuringPull = false
+                                        return@LaunchedEffect
+                                    }
+                                    if (feed.isFeedLoading) {
+                                        hasSeenFeedLoadingDuringPull = true
+                                    } else if (hasSeenFeedLoadingDuringPull) {
+                                        delay(250L)
+                                        isHomePullRefreshing = false
+                                    } else {
+                                        delay(900L)
+                                        if (!feed.isFeedLoading) {
+                                            isHomePullRefreshing = false
+                                        }
+                                    }
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .pullToRefresh(
+                                            isRefreshing = isHomePullRefreshing,
+                                            state = homePullToRefreshState,
+                                            onRefresh = {
+                                                isHomePullRefreshing = true
+                                                viewModel.refreshHomeFeed()
+                                            }
+                                        )
+                                ) {
                                     HomeAuroraBackground(
                                         auroraColors = auroraColors,
                                         isDark = isDarkTheme,
-                                        scrollOffsetPxProvider = { scrollState.value },
+                                        scrollOffsetPxProvider = {
+                                            if (homeListState.firstVisibleItemIndex > 0) 2000
+                                            else homeListState.firstVisibleItemScrollOffset
+                                        },
+                                        isVisible = !isPlayerExpanded && !isAmbientModeOpen && overlayStack.isEmpty(),
                                         modifier = Modifier.align(Alignment.TopCenter)
                                     )
 
-                                    // Scrollable Catalog Content Layer
-                                    Column(
+                                    // Scrollable Catalog Content Layer (virtualized LazyColumn)
+                                    LazyColumn(
+                                        state = homeListState,
+                                        contentPadding = PaddingValues(
+                                            top = topChromePadding,
+                                            bottom = bottomChromePadding
+                                        ),
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .nestedScroll(scrollConnection)
-                                            .verticalScroll(scrollState)
                                             .statusBarsPadding()
-                                            .padding(top = topChromePadding)
                                     ) {
-                                        HeaderBar(
-                                            showBrandBadge = !usesTopDesktopChrome,
-                                            onRefreshClick = if (usesTopDesktopChrome) {
-                                                { viewModel.refreshHomeFeed() }
-                                            } else {
-                                                null
-                                            }
-                                        )
+                                        item(key = "home_header", contentType = "header") {
+                                            HeaderBar(
+                                                showBrandBadge = !usesTopDesktopChrome,
+                                                pullProgress = homePullToRefreshState.distanceFraction,
+                                                isRefreshing = isHomePullRefreshing || feed.isFeedLoading,
+                                                onRefreshClick = if (usesTopDesktopChrome) {
+                                                    { viewModel.refreshHomeFeed() }
+                                                } else {
+                                                    null
+                                                }
+                                            )
+                                        }
 
-                                        val showYtmBanner = shouldDisplayYtmLoginBanner(
-                                            accountState = ytmAccountState,
-                                            shouldShowPrompt = shouldShowYtmLoginPrompt
-                                        )
-
-                                        AnimatedVisibility(
-                                            visible = showYtmBanner,
-                                            enter = expandVertically(animationSpec = tween(260)) + fadeIn(animationSpec = tween(220)),
-                                            exit = shrinkVertically(animationSpec = tween(220)) + fadeOut(animationSpec = tween(180))
-                                        ) {
-                                            Column(modifier = Modifier.fillMaxWidth()) {
-                                                Spacer(modifier = Modifier.height(12.dp))
-                                                YtmLoginPromptBanner(
-                                                    onSignInClick = { viewModel.openYtmLogin() },
-                                                    onLaterClick = { viewModel.remindYtmLoginLater() },
-                                                    onDismissClick = { viewModel.dismissYtmLoginPrompt() }
-                                                )
+                                        item(key = "ytm_login_banner", contentType = "banner") {
+                                            androidx.compose.animation.AnimatedVisibility(
+                                                visible = showYtmBanner,
+                                                enter = expandVertically(animationSpec = tween(260)) + fadeIn(animationSpec = tween(220)),
+                                                exit = shrinkVertically(animationSpec = tween(220)) + fadeOut(animationSpec = tween(180))
+                                            ) {
+                                                Column(modifier = Modifier.fillMaxWidth()) {
+                                                    Spacer(modifier = Modifier.height(12.dp))
+                                                    YtmLoginPromptBanner(
+                                                        onSignInClick = { viewModel.openYtmLogin() },
+                                                        onLaterClick = { viewModel.remindYtmLoginLater() },
+                                                        onDismissClick = { viewModel.dismissYtmLoginPrompt() }
+                                                    )
+                                                }
                                             }
                                         }
 
-                                        AnimatedContent(
-                                            targetState = feed.isFeedLoading,
-                                            transitionSpec = {
-                                                (fadeIn(animationSpec = tween(320)) + scaleIn(
-                                                    initialScale = 0.985f,
-                                                    animationSpec = tween(320)
-                                                )) togetherWith fadeOut(animationSpec = tween(220))
-                                            },
-                                            label = "homeFeedSkeletonTransition"
-                                        ) { isLoading ->
-                                            if (isLoading) {
+                                        if (feed.isFeedLoading) {
+                                            item(key = "home_skeleton", contentType = "skeleton") {
                                                 Column(modifier = Modifier.fillMaxWidth()) {
                                                     if (showYtmBanner) {
                                                         Spacer(modifier = Modifier.height(8.dp))
@@ -680,161 +751,197 @@ fun HomeScreen(
                                                         modifier = Modifier.fillMaxWidth()
                                                     )
                                                 }
-                                            } else {
-                                                Column(modifier = Modifier.fillMaxWidth()) {
-                                                    // 1. Top Picks For You
-                                        if (feed.topPicks.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(if (showYtmBanner) 20.dp else 10.dp))
-
-                                            TopPicksSection(
-                                                items = feed.topPicks,
-                                                onTopPickClick = { item -> viewModel.onTopPickClick(item) }
-                                            )
-
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            }
                                         } else {
-                                            Spacer(modifier = Modifier.height(if (showYtmBanner) 18.dp else 10.dp))
-                                        }
+                                            // 1. Top Picks For You
+                                            if (feed.topPicks.isNotEmpty()) {
+                                                item(key = "top_picks", contentType = "top_picks") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(if (showYtmBanner) 20.dp else 10.dp))
+                                                        TopPicksSection(
+                                                            items = feed.topPicks,
+                                                            onTopPickClick = { item -> viewModel.onTopPickClick(item) },
+                                                            onTopPickLongPress = { item -> viewModel.onTopPickLongPress(item) }
+                                                        )
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                    }
+                                                }
+                                            } else {
+                                                item(key = "top_picks_spacer", contentType = "spacer") {
+                                                    Spacer(modifier = Modifier.height(if (showYtmBanner) 18.dp else 10.dp))
+                                                }
+                                            }
 
-                                        // 2. Recently Played (Bento Grid)
-                                        BentoGrid(
-                                            tracks = feed.recentlyPlayedTracks,
-                                            onAlbumClick = { album -> viewModel.onAlbumClicked(album) },
-                                            onAddFolderClick = { viewModel.openSettings() }
-                                        )
+                                            // 2. Recently Played (Bento Grid)
+                                            item(key = "bento_grid", contentType = "bento_grid") {
+                                                BentoGrid(
+                                                    tracks = feed.recentlyPlayedTracks,
+                                                    onAlbumClick = { album -> viewModel.onAlbumClicked(album) },
+                                                    onAddFolderClick = { viewModel.openSettings() },
+                                                    onTrackLongPress = { track -> viewModel.openTrackOptions(track) }
+                                                )
+                                            }
 
-                                        // 2B. Auto-Generated Smart Playlists ("Sugerencias para ti")
-                                        val homeSmartPlaylists = smartSuggestedPlaylists.ifEmpty { feed.smartSuggestedPlaylists }
-                                        if (homeSmartPlaylists.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            // 2B. Auto-Generated Smart Playlists ("Sugerencias para ti")
+                                            if (homeSmartPlaylists.isNotEmpty()) {
+                                                item(key = "smart_playlists", contentType = "smart_playlists") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        SmartSuggestedPlaylistsSection(
+                                                            playlists = homeSmartPlaylists,
+                                                            savedPlaylistTitles = savedPlaylistTitles,
+                                                            onPlaylistClick = { playlist -> viewModel.openPlaylistDetail(playlist) },
+                                                            onPlayPlaylistClick = { playlist -> viewModel.playPlaylistTracks(playlist, 0) },
+                                                            onSavePlaylistClick = { playlist -> viewModel.saveSuggestedPlaylistToLibrary(playlist) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                            SmartSuggestedPlaylistsSection(
-                                                playlists = homeSmartPlaylists,
-                                                savedPlaylistTitles = savedPlaylistTitles,
-                                                onPlaylistClick = { playlist -> viewModel.openPlaylistDetail(playlist) },
-                                                onPlayPlaylistClick = { playlist -> viewModel.playPlaylistTracks(playlist, 0) },
-                                                onSavePlaylistClick = { playlist -> viewModel.saveSuggestedPlaylistToLibrary(playlist) }
-                                            )
-                                        }
+                                            // 3. More like #1
+                                            if (moreLike1 != null) {
+                                                item(key = "more_like_0", contentType = "more_like_row") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        MoreLikeAlbumSectionRow(
+                                                            section = moreLike1,
+                                                            onAlbumClick = { album -> viewModel.onAlbumClicked(album) },
+                                                            onAlbumLongPress = { album -> viewModel.openAlbumOptions(album) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                        val moreLikeSections = remember(feed.moreLikeSections) {
-                                            feed.moreLikeSections.filter { it.albums.isNotEmpty() }
-                                        }
-                                        val moreLike1 = moreLikeSections.getOrNull(0)
-                                        val moreLike2 = moreLikeSections.getOrNull(1)
-                                        val moreLike3 = moreLikeSections.getOrNull(2)
+                                            // 4. Related Artists For You
+                                            if (feed.relatedArtists.isNotEmpty()) {
+                                                item(key = "related_artists", contentType = "related_artists") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        RelatedArtistsRow(
+                                                            artists = feed.relatedArtists,
+                                                            onArtistClick = { artist -> viewModel.onArtistClicked(artist) },
+                                                            onArtistLongPress = { artist -> viewModel.openArtistOptions(artist) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                        // 3. More like #1
-                                        if (moreLike1 != null) {
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            // 5. Playlists Made For You
+                                            if (feed.playlistsMadeForYou.isNotEmpty()) {
+                                                item(key = "playlists_made_for_you", contentType = "playlists_row") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        PlaylistsMadeForYouSection(
+                                                            playlists = feed.playlistsMadeForYou,
+                                                            onPlaylistClick = { item -> viewModel.onRecommendedPlaylistClick(item) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                            MoreLikeAlbumSectionRow(
-                                                section = moreLike1,
-                                                onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
-                                            )
-                                        }
+                                            // 6. More like #2
+                                            if (moreLike2 != null) {
+                                                item(key = "more_like_1", contentType = "more_like_row") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        MoreLikeAlbumSectionRow(
+                                                            section = moreLike2,
+                                                            onAlbumClick = { album -> viewModel.onAlbumClicked(album) },
+                                                            onAlbumLongPress = { album -> viewModel.openAlbumOptions(album) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                        // 4. Related Artists For You
-                                        if (feed.relatedArtists.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            // 7. Estaciones de Radio
+                                            if (feed.radioStations.isNotEmpty()) {
+                                                item(key = "radio_stations", contentType = "radio_stations") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        RadioStationsSection(
+                                                            stations = feed.radioStations,
+                                                            onStationClick = { station -> viewModel.onRadioStationClick(station) },
+                                                            onSeeMoreClick = { viewModel.openHomeGrid(HomeGridCategory.RADIO_STATIONS) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                            RelatedArtistsRow(
-                                                artists = feed.relatedArtists,
-                                                onArtistClick = { artist -> viewModel.onArtistClicked(artist) }
-                                            )
-                                        }
+                                            // 8. Recommended Songs (YouTube Music Powered)
+                                            if (feed.recommendedTracks.isNotEmpty()) {
+                                                item(key = "recommended_songs", contentType = "recommended_songs") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        RecommendedSongsSection(
+                                                            tracks = feed.recommendedTracks,
+                                                            likedTrackIds = likedTrackIds,
+                                                            onToggleFavorite = { track -> viewModel.toggleFavorite(track) },
+                                                            onTrackClick = { track -> viewModel.onSearchTrackClicked(track) },
+                                                            onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) },
+                                                            onTrackMoreClick = { track -> viewModel.openTrackOptions(track) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                        // 5. Playlists Made For You
-                                        if (feed.playlistsMadeForYou.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            // 9. Novedades
+                                            if (feed.newReleases.isNotEmpty()) {
+                                                item(key = "new_releases", contentType = "new_releases") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        NovedadesSection(
+                                                            releases = feed.newReleases,
+                                                            onReleaseClick = { release -> viewModel.onNewReleaseClick(release) },
+                                                            onSeeMoreClick = { viewModel.openHomeGrid(HomeGridCategory.NOVEDADES) },
+                                                            onReleaseLongPress = { release -> viewModel.onNewReleaseLongPress(release) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                            PlaylistsMadeForYouSection(
-                                                playlists = feed.playlistsMadeForYou,
-                                                onPlaylistClick = { item -> viewModel.onRecommendedPlaylistClick(item) }
-                                            )
-                                        }
+                                            // 10. More like #3
+                                            if (moreLike3 != null) {
+                                                item(key = "more_like_2", contentType = "more_like_row") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        MoreLikeAlbumSectionRow(
+                                                            section = moreLike3,
+                                                            onAlbumClick = { album -> viewModel.onAlbumClicked(album) },
+                                                            onAlbumLongPress = { album -> viewModel.openAlbumOptions(album) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                        // 6. More like #2
-                                        if (moreLike2 != null) {
-                                            Spacer(modifier = Modifier.height(26.dp))
+                                            // 11. Recommended Albums (YouTube Music Powered)
+                                            if (feed.recommendedAlbums.isNotEmpty()) {
+                                                item(key = "recommended_albums", contentType = "recommended_albums") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        RecommendedAlbumsSection(
+                                                            albums = feed.recommendedAlbums,
+                                                            onAlbumClick = { album -> viewModel.onAlbumClicked(album) },
+                                                            onAlbumLongPress = { album -> viewModel.openAlbumOptions(album) }
+                                                        )
+                                                    }
+                                                }
+                                            }
 
-                                            MoreLikeAlbumSectionRow(
-                                                section = moreLike2,
-                                                onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
-                                            )
-                                        }
-
-                                        // 7. Estaciones de Radio
-                                        if (feed.radioStations.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            RadioStationsSection(
-                                                stations = feed.radioStations,
-                                                onStationClick = { station -> viewModel.onRadioStationClick(station) },
-                                                onSeeMoreClick = { viewModel.openHomeGrid(HomeGridCategory.RADIO_STATIONS) }
-                                            )
-                                        }
-
-                                        // 8. Recommended Songs (YouTube Music Powered)
-                                        if (feed.recommendedTracks.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            RecommendedSongsSection(
-                                                tracks = feed.recommendedTracks,
-                                                likedTrackIds = likedTrackIds,
-                                                onToggleFavorite = { track -> viewModel.toggleFavorite(track) },
-                                                onTrackClick = { track -> viewModel.onSearchTrackClicked(track) },
-                                                onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) }
-                                            )
-                                        }
-
-                                        // 9. Novedades
-                                        if (feed.newReleases.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            NovedadesSection(
-                                                releases = feed.newReleases,
-                                                onReleaseClick = { release -> viewModel.onNewReleaseClick(release) },
-                                                onSeeMoreClick = { viewModel.openHomeGrid(HomeGridCategory.NOVEDADES) }
-                                            )
-                                        }
-
-                                        // 10. More like #3
-                                        if (moreLike3 != null) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            MoreLikeAlbumSectionRow(
-                                                section = moreLike3,
-                                                onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
-                                            )
-                                        }
-
-                                        // 11. Recommended Albums (YouTube Music Powered)
-                                        if (feed.recommendedAlbums.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            RecommendedAlbumsSection(
-                                                albums = feed.recommendedAlbums,
-                                                onAlbumClick = { album -> viewModel.onAlbumClicked(album) }
-                                            )
-                                        }
-
-                                        // 12. Discover by Genre (Dynamic Filters & Tracks from YouTube Music)
-                                        if (feed.genreTags.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.height(26.dp))
-
-                                            DiscoverByGenreSection(
-                                                genres = feed.genreTags,
-                                                selectedGenre = feed.selectedGenreTag,
-                                                genreTracks = feed.genreTracks,
-                                                onGenreSelect = { genre -> viewModel.onGenreSelected(genre) },
-                                                onTrackClick = { track -> viewModel.onSearchTrackClicked(track) },
-                                                onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) }
-                                            )
-                                        }
-
-                                        // Bottom clearance so content scrolls completely clear of floating LiquidGlass capsules
-                                        Spacer(modifier = Modifier.height(bottomChromePadding))
+                                            // 12. Discover by Genre (Dynamic Filters & Tracks from YouTube Music)
+                                            if (feed.genreTags.isNotEmpty()) {
+                                                item(key = "discover_by_genre", contentType = "discover_by_genre") {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Spacer(modifier = Modifier.height(26.dp))
+                                                        DiscoverByGenreSection(
+                                                            genres = feed.genreTags,
+                                                            selectedGenre = feed.selectedGenreTag,
+                                                            genreTracks = feed.genreTracks,
+                                                            onGenreSelect = { genre -> viewModel.onGenreSelected(genre) },
+                                                            onTrackClick = { track -> viewModel.onSearchTrackClicked(track) },
+                                                            onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) },
+                                                            onTrackMoreClick = { track -> viewModel.openTrackOptions(track) }
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -943,6 +1050,11 @@ fun HomeScreen(
                                                         viewModel.saveSuggestedPlaylistToLibrary(playlist)
                                                     },
                                                     onCreatePlaylistClick = { viewModel.openCreatePlaylistDialog() },
+                                                    isYtmSignedIn = ytmAccountState.isSignedIn,
+                                                    onImportYtmPlaylistsClick = { viewModel.openYtmPlaylistImport() },
+                                                    onRequestDeletePlaylist = { playlist -> viewModel.requestDeletePlaylist(playlist) },
+                                                    statusMessage = ytmImportStatusMessage,
+                                                    onDismissStatusMessage = { viewModel.dismissYtmImportStatusMessage() },
                                                     auroraColors = auroraColors,
                                                     applyStatusBarsPadding = true,
                                                     modifier = Modifier
@@ -981,10 +1093,23 @@ fun HomeScreen(
                                                         onToggleFavorite = { track -> viewModel.toggleFavorite(track.id, fallback = track) },
                                                         onRemoveTrack = { track -> viewModel.removeTrackFromPlaylist(activeInlinePlaylist.id, track.id) },
                                                         onEditPlaylistClick = { viewModel.openCreatePlaylistDialog(activeInlinePlaylist) },
-                                                        onDeletePlaylistClick = { viewModel.deletePlaylist(activeInlinePlaylist.id) },
+                                                        onDeletePlaylistClick = { viewModel.requestDeletePlaylist(activeInlinePlaylist) },
+                                                        isYtmSignedIn = ytmAccountState.isSignedIn,
+                                                        isRefreshingImportedPlaylist = isRefreshingImportedPlaylist,
+                                                        onRefreshImportedPlaylistClick = { viewModel.refreshImportedPlaylist(activeInlinePlaylist) },
                                                         auroraColors = auroraColors,
                                                         onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) },
-                                                        onTrackMoreClick = { track -> viewModel.openTrackOptions(track) },
+                                                        onTrackMoreClick = { track ->
+                                                            viewModel.openTrackOptions(
+                                                                track = track,
+                                                                removeLabel = if (!activeInlinePlaylist.isSmartSuggestion) "Remove from Playlist" else null,
+                                                                onRemove = if (!activeInlinePlaylist.isSmartSuggestion) {
+                                                                    { viewModel.removeTrackFromPlaylist(activeInlinePlaylist.id, track.id) }
+                                                                } else {
+                                                                    null
+                                                                }
+                                                            )
+                                                        },
                                                         modifier = Modifier.fillMaxSize()
                                                     )
                                                 } else {
@@ -1003,6 +1128,11 @@ fun HomeScreen(
                                         onPlayPlaylistClick = { playlist -> viewModel.playPlaylistTracks(playlist) },
                                         onSaveSuggestedPlaylist = { playlist -> viewModel.saveSuggestedPlaylistToLibrary(playlist) },
                                         onCreatePlaylistClick = { viewModel.openCreatePlaylistDialog() },
+                                        isYtmSignedIn = ytmAccountState.isSignedIn,
+                                        onImportYtmPlaylistsClick = { viewModel.openYtmPlaylistImport() },
+                                        onRequestDeletePlaylist = { playlist -> viewModel.requestDeletePlaylist(playlist) },
+                                        statusMessage = ytmImportStatusMessage,
+                                        onDismissStatusMessage = { viewModel.dismissYtmImportStatusMessage() },
                                         auroraColors = auroraColors,
                                         applyStatusBarsPadding = true,
                                         modifier = Modifier
@@ -1221,10 +1351,23 @@ fun HomeScreen(
                                 onToggleFavorite = { track -> viewModel.toggleFavorite(track.id, fallback = track) },
                                 onRemoveTrack = { track -> viewModel.removeTrackFromPlaylist(playlist.id, track.id) },
                                 onEditPlaylistClick = { viewModel.openCreatePlaylistDialog(playlist) },
-                                onDeletePlaylistClick = { viewModel.deletePlaylist(playlist.id) },
+                                onDeletePlaylistClick = { viewModel.requestDeletePlaylist(playlist) },
+                                isYtmSignedIn = ytmAccountState.isSignedIn,
+                                isRefreshingImportedPlaylist = isRefreshingImportedPlaylist,
+                                onRefreshImportedPlaylistClick = { viewModel.refreshImportedPlaylist(playlist) },
                                 auroraColors = auroraColors,
                                 onPlayTrackFromList = { tracks, index -> viewModel.playQueue(tracks, index) },
-                                onTrackMoreClick = { track -> viewModel.openTrackOptions(track) },
+                                onTrackMoreClick = { track ->
+                                    viewModel.openTrackOptions(
+                                        track = track,
+                                        removeLabel = if (!playlist.isSmartSuggestion) "Remove from Playlist" else null,
+                                        onRemove = if (!playlist.isSmartSuggestion) {
+                                            { viewModel.removeTrackFromPlaylist(playlist.id, track.id) }
+                                        } else {
+                                            null
+                                        }
+                                    )
+                                },
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
@@ -1294,7 +1437,12 @@ fun HomeScreen(
             }
 
             if (usesTopDesktopChrome) {
-                val isHomeScrolled = selectedTab == NavigationTab.Home && scrollState.value > 12
+                val isHomeScrolled by remember(selectedTab, homeListState) {
+                    derivedStateOf {
+                        selectedTab == NavigationTab.Home &&
+                            (homeListState.firstVisibleItemIndex > 0 || homeListState.firstVisibleItemScrollOffset > 12)
+                    }
+                }
                 val topScrimAlpha by animateFloatAsState(
                     targetValue = when {
                         overlayStack.isNotEmpty() -> if (isDarkTheme) 0.44f else 0.54f
@@ -1365,6 +1513,7 @@ fun HomeScreen(
                     onToggleNowPlayingSidebar = {
                         isNowPlayingSidebarOpen = !isNowPlayingSidebarOpen
                     },
+                    playbackPositionMsFlow = viewModel.playbackPositionMs,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .statusBarsPadding()
@@ -1377,7 +1526,7 @@ fun HomeScreen(
                         }
                 )
             } else {
-                // Fixed Top-Right Settings Button pinned on screen with Convx LiquidGlass (only in catalog mode)
+                // Fixed Top-Right Unified LiquidGlass Cast + Settings Pill (only in catalog mode)
                 if (!isSearchActive &&
                     effectiveSearchProgress < 0.05f &&
                     !shouldHideSettingsButton(selectedTab, activeLibrarySubView) &&
@@ -1386,35 +1535,17 @@ fun HomeScreen(
                     effectiveAlbumProgress < 0.05f &&
                     effectivePlaylistProgress < 0.05f
                 ) {
-                    Row(
+                    HomeTopRightCastSettingsPill(
+                        castState = castState,
+                        castRouteCount = castRoutes.size,
+                        onCastClick = { viewModel.onCastButtonClicked() },
+                        onSettingsClick = { viewModel.openSettings() },
+                        appColors = appColors,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .statusBarsPadding()
-                            .padding(top = 10.dp, end = 18.dp),
-                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        CastButton(
-                            castState = castState,
-                            onClick = { viewModel.onCastButtonClicked() },
-                            availableRouteCount = castRoutes.size,
-                            style = CastButtonStyle.GLASS_CIRCLE,
-                            iconSize = 20.dp,
-                            appColors = appColors
-                        )
-
-                        GlassCircleButton(
-                            onClick = { viewModel.openSettings() },
-                            size = 42.dp
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Settings,
-                                contentDescription = "Settings",
-                                tint = appColors.glassTextPrimary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
+                            .padding(top = 10.dp, end = 18.dp)
+                    )
                 }
 
                 // Active Chromecast Floating Mini Banner above bottom navigation
@@ -1450,6 +1581,7 @@ fun HomeScreen(
                     onSkipNext = { viewModel.onSkipNext() },
                     onSkipPrevious = { viewModel.onSkipPrevious() },
                     onSeek = { frac -> viewModel.seekTo(frac) },
+                    playbackPositionMsFlow = viewModel.playbackPositionMs,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .widthIn(max = 520.dp)
@@ -1523,9 +1655,17 @@ fun HomeScreen(
                             },
                             onOpenAmbientMode = { viewModel.openAmbientMode() },
                             onSetAsRingtone = { track -> viewModel.openRingtoneEditor(track) },
+                            onPlayNext = { track -> viewModel.playNext(track) },
+                            onAddToQueue = { track -> viewModel.addToQueue(track) },
+                            onGoToAlbum = { track -> viewModel.openAlbumFromTrack(track) },
+                            onOpenSongInfo = { track -> viewModel.openSongInfo(track) },
+                            onDirectDownloadFormat = { track, format -> viewModel.downloadTrackDirect(track, format) },
                             castState = castState,
                             castRouteCount = castRoutes.size,
                             onOpenCastPicker = { viewModel.onCastButtonClicked() },
+                            playbackPositionMsFlow = viewModel.playbackPositionMs,
+                            lyricsPlaybackPositionMsFlow = viewModel.lyricsPlaybackPositionMs,
+                            onSeekToLyricPosition = { posMs -> viewModel.seekToLyricPosition(posMs) },
                             modifier = Modifier
                                 .width(NowPlayingSidebarDefaults.Width)
                                 .fillMaxHeight()
@@ -1552,6 +1692,8 @@ fun HomeScreen(
                     !updateUiState.isDialogOpen &&
                     trackForAddToPlaylist == null &&
                     trackForOptionsMenu == null &&
+                    albumForOptionsMenu == null &&
+                    artistForOptionsMenu == null &&
                     trackForRingtoneEditor == null
             ) {
                 isNowPlayingSidebarOpen = false
@@ -1691,6 +1833,7 @@ fun HomeScreen(
                         lyricsProviders = lyricsProviders,
                         canvasArtwork = currentCanvasArtwork,
                         musicVideo = currentMusicVideo,
+                        isOfficialVideoAvailable = officialMusicVideoMetadata != null,
                         isResolvingMusicVideo = isResolvingMusicVideo,
                         playerMediaMode = playerMediaMode,
                         onSelectPlayerMediaMode = { mode -> viewModel.setPlayerMediaMode(mode) },
@@ -1711,9 +1854,18 @@ fun HomeScreen(
                         },
                         onOpenAmbientMode = { viewModel.openAmbientMode() },
                         onSetAsRingtone = { track -> viewModel.openRingtoneEditor(track) },
+                        onPlayNext = { track -> viewModel.playNext(track) },
+                        onAddToQueue = { track -> viewModel.addToQueue(track) },
+                        onGoToArtist = { artistName -> viewModel.openArtistFromMenu(artistName) },
+                        onGoToAlbum = { track -> viewModel.openAlbumFromTrack(track) },
+                        onOpenSongInfo = { track -> viewModel.openSongInfo(track) },
+                        onDirectDownloadFormat = { track, format -> viewModel.downloadTrackDirect(track, format) },
                         castState = castState,
                         castRouteCount = castRoutes.size,
-                        onOpenCastPicker = { viewModel.onCastButtonClicked() }
+                        onOpenCastPicker = { viewModel.onCastButtonClicked() },
+                        playbackPositionMsFlow = viewModel.playbackPositionMs,
+                        lyricsPlaybackPositionMsFlow = viewModel.lyricsPlaybackPositionMs,
+                        onSeekToLyricPosition = { posMs -> viewModel.seekToLyricPosition(posMs) }
                     )
                 }
             }
@@ -1763,6 +1915,7 @@ fun HomeScreen(
                             modifier = Modifier.size(34.dp)
                         )
                     },
+                    playbackPositionMsFlow = viewModel.playbackPositionMs,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -1784,196 +1937,380 @@ fun HomeScreen(
                 )
             }
 
-            // Settings Sheet
-            SettingsSheet(
-                isOpen = isSettingsOpen,
-                onDismiss = { viewModel.closeSettings() },
-                selectedThemeMode = themeMode,
-                onSelectThemeMode = { mode -> viewModel.selectThemeMode(mode) },
-                selectedAccentOption = accentColorOption,
-                dynamicArtworkColor = dynamicArtworkColor,
-                onSelectAccentOption = { opt -> viewModel.selectAccentColorOption(opt) },
-                glassSettings = liquidGlassSettings,
-                onUpdateBlurRadius = { r -> viewModel.updateBlurRadius(r) },
-                onUpdateRefractionStrength = { s -> viewModel.updateRefractionStrength(s) },
-                onUpdateSurfaceTintOpacity = { o -> viewModel.updateSurfaceTintOpacity(o) },
-                onUpdateSpecularMeniscus = { m -> viewModel.updateSpecularMeniscus(m) },
-                onResetLiquidGlassSettings = { viewModel.resetLiquidGlassSettings() },
-                folders = libraryFolders,
-                isScanning = isScanning,
-                onScanMediaStore = { viewModel.scanMediaStore() },
-                onAddFolder = { uri -> viewModel.addLibraryFolder(uri) },
-                onRemoveFolder = { folderUri -> viewModel.removeLibraryFolder(folderUri) },
-                downloadOptions = downloadOptions,
-                onUpdateDownloadOptions = { opts -> viewModel.updateDownloadOptions(opts) },
-                ytmAccountState = ytmAccountState,
-                isSyncingYtmAccount = isSyncingYtmAccount,
-                onSignInYtmClick = {
-                    viewModel.closeSettings()
-                    viewModel.openYtmLogin()
-                },
-                onSignOutYtmClick = { viewModel.signOutYtm() },
-                onForceSyncYtmClick = { viewModel.forceSyncYtm() },
-                autoCheckUpdates = autoCheckUpdates,
-                onToggleAutoCheckUpdates = { enabled -> viewModel.setAutoCheckUpdates(enabled) },
-                updateUiState = updateUiState,
-                onCheckForUpdatesClick = { viewModel.checkForUpdatesManually() }
-            )
-
-            // App Auto-Update Modal Dialog
-            UpdateDialog(
-                uiState = updateUiState,
-                onDismiss = { viewModel.dismissUpdateDialog() },
-                onStartUpdate = { viewModel.startUpdateDownloadAndInstall() },
-                onCancelDownload = { viewModel.cancelUpdateDownload() },
-                onOpenInstallPermissionSettings = {
-                    unknownSourcesLauncher.launch(
-                        ApkInstaller.createUnknownAppSourcesSettingsIntent(context)
-                    )
-                },
-                onRetryLaunchInstaller = { viewModel.retryLaunchVerifiedInstaller() }
-            )
-
-            // Fullscreen YouTube Music Account WebView Login Sheet
-            YouTubeLoginSheet(
-                isOpen = isYtmLoginSheetOpen,
-                onDismiss = { viewModel.closeYtmLogin() },
-                onCredentialsCaptured = { cookie, visitorData, dataSyncId ->
-                    viewModel.onYtmCredentialsCaptured(cookie, visitorData, dataSyncId)
-                },
-                isValidating = isSyncingYtmAccount,
-                validationError = ytmLoginError
-            )
-
-            // Download Confirmation & Source Resolution Modal
-            playbackState.currentTrack?.let { currentTrack ->
-                DownloadConfirmationModal(
-                    isOpen = isDownloadModalOpen,
-                    track = currentTrack,
-                    candidates = downloadCandidates,
-                    isSearching = isSearchingCandidates,
-                    progressState = downloadProgressState,
-                    defaultFormat = downloadOptions.defaultFormat,
-                    onDismiss = { viewModel.closeDownloadModal() },
-                    onConfirmDownload = { candidate, format ->
-                        viewModel.startDownload(currentTrack, candidate, format)
-                    }
-                )
-            }
-
-            // Create & Edit Playlist Dialog
-            CreatePlaylistDialog(
-                isOpen = isCreatePlaylistDialogOpen,
-                playlistToEdit = playlistToEdit,
-                onDismiss = { viewModel.closeCreatePlaylistDialog() },
-                onConfirm = { title, description, customCoverPath ->
-                    viewModel.savePlaylist(
-                        title = title,
-                        description = description,
-                        customCoverPath = customCoverPath.ifBlank { null }
-                    )
-                }
-            )
-
-            // Add To Playlist Bottom Sheet
-            AddToPlaylistSheet(
-                track = trackForAddToPlaylist,
-                playlists = playlists,
-                isOpen = trackForAddToPlaylist != null,
-                onDismiss = { viewModel.closeAddToPlaylist() },
-                onSelectPlaylist = { playlist, track ->
-                    viewModel.addTrackToPlaylist(playlist, track)
-                    viewModel.closeAddToPlaylist()
-                },
-                onCreateNewPlaylistWithTrack = { track ->
-                    viewModel.openCreatePlaylistDialog()
-                }
-            )
-
-            // Universal Track Options Sheet
-            TrackOptionsMenuSheet(
-                track = trackForOptionsMenu,
-                isLiked = trackForOptionsMenu?.let { likedTrackIds.contains(it.id) } ?: false,
-                isOpen = trackForOptionsMenu != null,
-                onDismiss = { viewModel.closeTrackOptions() },
-                onAddToPlaylist = { track ->
-                    viewModel.closeTrackOptions()
-                    viewModel.openAddToPlaylist(track)
-                },
-                onDownload = { track ->
-                    viewModel.closeTrackOptions()
-                    viewModel.openDownloadModal(track)
-                },
-                onToggleFavorite = { track ->
-                    viewModel.toggleFavorite(track.id, fallback = track)
-                },
-                onSetAsRingtone = { track ->
-                    viewModel.closeTrackOptions()
-                    viewModel.openRingtoneEditor(track)
-                }
-            )
-
-            // Set as Ringtone Audio Trimmer & Clip Manager Sheet
-            RingtoneEditorSheet(
-                track = trackForRingtoneEditor,
-                isOpen = trackForRingtoneEditor != null,
-                onDismiss = { viewModel.closeRingtoneEditor() },
-                onPauseMainPlayback = { viewModel.pausePlayback() },
-                resolveAudioSource = { track -> viewModel.resolveLocalAudioUriForRingtone(track) }
-            )
-
-            // Custom Chromecast Device Picker Sheet (with Local Audio Output Switcher bridge)
-            CastDevicePickerSheet(
-                isOpen = isCastPickerOpen,
-                onDismiss = { viewModel.closeCastPicker() },
-                castState = castState,
-                routes = castRoutes,
-                isScanning = isCastScanning,
-                onStartDiscovery = { viewModel.castController.startActiveDiscovery() },
-                onStopDiscovery = { viewModel.castController.stopActiveDiscovery() },
-                onSelectRoute = { deviceId ->
-                    viewModel.castController.selectRoute(deviceId)
-                    viewModel.closeCastPicker()
-                },
-                onDisconnect = { viewModel.castController.disconnect() },
-                onSetVolume = { volume -> viewModel.castController.setVolume(volume) },
-                onToggleMute = { viewModel.castController.toggleMute() },
-                onOpenExpandedControls = { viewModel.openCastControls() },
-                onClearError = { viewModel.castController.clearError() },
-                currentLocalOutputName = outputDeviceName,
-                onOpenSystemAudioOutput = {
-                    val act = context as? Activity
-                    if (act != null) {
-                        viewModel.closeCastPicker()
-                        viewModel.onOpenOutputSwitcher(act)
-                    }
-                },
-                accentColor = animatedAccentColor,
-                appColors = appColors
-            )
-
-            // Custom Expanded Chromecast Remote Control Sheet
-            CastExpandedControlsSheet(
-                isOpen = isCastControlsOpen,
-                onDismiss = { viewModel.closeCastControls() },
-                castState = castState,
-                onTogglePlayPause = { viewModel.castController.togglePlayPause() },
-                onSkipNext = { viewModel.castController.skipNext() },
-                onSkipPrevious = { viewModel.castController.skipPrevious() },
-                onSeekTo = { positionMs -> viewModel.castController.seekTo(positionMs) },
-                onSetVolume = { volume -> viewModel.castController.setVolume(volume) },
-                onToggleMute = { viewModel.castController.toggleMute() },
-                onToggleShuffle = { viewModel.castController.toggleShuffle() },
-                onCycleRepeatMode = { viewModel.castController.cycleRepeatMode() },
-                onJumpToQueueIndex = { index -> viewModel.castController.jumpToQueueIndex(index) },
-                onDisconnect = { viewModel.castController.disconnect() },
-                onOpenDevicePicker = { viewModel.openCastPicker() },
-                accentColor = animatedAccentColor,
-                appColors = appColors
+            HomeModalsAndSheetsLayer(
+                viewModel = viewModel,
+                appColors = appColors,
+                animatedAccentColor = animatedAccentColor
             )
         }
         }
     }
+}
+
+@Composable
+private fun HomeModalsAndSheetsLayer(
+    viewModel: HomeViewModel,
+    appColors: com.xperience.player.ui.theme.AppThemeColors,
+    animatedAccentColor: Color
+) {
+    val context = LocalContext.current
+    val isSettingsOpen by viewModel.isSettingsOpen.collectAsState()
+    val themeMode by viewModel.themeMode.collectAsState()
+    val accentColorOption by viewModel.accentColorOption.collectAsState()
+    val dynamicArtworkColor by viewModel.dynamicArtworkColor.collectAsState()
+    val liquidGlassSettings by viewModel.liquidGlassSettings.collectAsState()
+    val libraryFolders by viewModel.libraryFolders.collectAsState()
+    val isScanning by viewModel.isScanning.collectAsState()
+    val downloadOptions by viewModel.downloadOptions.collectAsState()
+    val ytmAccountState by viewModel.ytmAccountState.collectAsState()
+    val isSyncingYtmAccount by viewModel.isSyncingYtmAccount.collectAsState()
+    val autoCheckUpdates by viewModel.autoCheckUpdates.collectAsState()
+    val updateUiState by viewModel.updateUiState.collectAsState()
+    val playbackPreferences by viewModel.playbackPreferences.collectAsState()
+    val dataUsageSummary by viewModel.dataUsageSummary.collectAsState()
+    val localScanFilterConfig by viewModel.localScanFilterConfig.collectAsState()
+    val lyricsProviders by viewModel.lyricsProviders.collectAsState()
+    val isDataUsageSheetOpen by viewModel.isDataUsageSheetOpen.collectAsState()
+    val trackForSongInfo by viewModel.trackForSongInfo.collectAsState()
+    val currentTrackPlaybackInfo by viewModel.currentTrackPlaybackInfo.collectAsState()
+    val inspectedSongInfo by viewModel.inspectedSongInfo.collectAsState()
+    val outputDeviceName by viewModel.outputDeviceName.collectAsState()
+    val isYtmLoginSheetOpen by viewModel.isYtmLoginSheetOpen.collectAsState()
+    val ytmLoginError by viewModel.ytmLoginError.collectAsState()
+    val isYtmPlaylistImportOpen by viewModel.isYtmPlaylistImportOpen.collectAsState()
+    val isLoadingYtmLibraryPlaylists by viewModel.isLoadingYtmLibraryPlaylists.collectAsState()
+    val ytmLibraryPlaylists by viewModel.ytmLibraryPlaylists.collectAsState()
+    val selectedYtmPlaylistIds by viewModel.selectedYtmPlaylistIds.collectAsState()
+    val playlists by viewModel.playlists.collectAsState()
+    val isImportingYtmPlaylists by viewModel.isImportingYtmPlaylists.collectAsState()
+    val ytmImportProgressText by viewModel.ytmImportProgressText.collectAsState()
+    val ytmImportError by viewModel.ytmImportError.collectAsState()
+    val playlistPendingDelete by viewModel.playlistPendingDelete.collectAsState()
+    val trackForDownload by viewModel.trackForDownload.collectAsState()
+    val playbackState by viewModel.playbackState.collectAsState()
+    val isDownloadModalOpen by viewModel.isDownloadModalOpen.collectAsState()
+    val downloadCandidates by viewModel.downloadCandidates.collectAsState()
+    val isSearchingCandidates by viewModel.isSearchingCandidates.collectAsState()
+    val downloadProgressState by viewModel.downloadProgressState.collectAsState()
+    val isCreatePlaylistDialogOpen by viewModel.isCreatePlaylistDialogOpen.collectAsState()
+    val playlistToEdit by viewModel.playlistToEdit.collectAsState()
+    val trackForAddToPlaylist by viewModel.trackForAddToPlaylist.collectAsState()
+    val trackForOptionsMenu by viewModel.trackForOptionsMenu.collectAsState()
+    val likedTrackIds by viewModel.likedTrackIds.collectAsState()
+    val trackOptionsRemoveAction by viewModel.trackOptionsRemoveAction.collectAsState()
+    val albumForOptionsMenu by viewModel.albumForOptionsMenu.collectAsState()
+    val artistForOptionsMenu by viewModel.artistForOptionsMenu.collectAsState()
+    val trackForRingtoneEditor by viewModel.trackForRingtoneEditor.collectAsState()
+    val isCastPickerOpen by viewModel.isCastPickerOpen.collectAsState()
+    val castState by viewModel.castState.collectAsState()
+    val castRoutes by viewModel.castRoutes.collectAsState()
+    val isCastScanning by viewModel.isCastScanning.collectAsState()
+    val isCastControlsOpen by viewModel.isCastControlsOpen.collectAsState()
+
+    val unknownSourcesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        viewModel.onReturnedFromInstallPermissionSettings()
+    }
+
+    // Full-Screen Material 3 Expressive Settings Screen
+    SettingsScreen(
+        isOpen = isSettingsOpen,
+        onDismiss = { viewModel.closeSettings() },
+        selectedThemeMode = themeMode,
+        onSelectThemeMode = { mode -> viewModel.selectThemeMode(mode) },
+        selectedAccentOption = accentColorOption,
+        dynamicArtworkColor = dynamicArtworkColor,
+        onSelectAccentOption = { opt -> viewModel.selectAccentColorOption(opt) },
+        glassSettings = liquidGlassSettings,
+        onUpdateBlurRadius = { r -> viewModel.updateBlurRadius(r) },
+        onUpdateRefractionStrength = { s -> viewModel.updateRefractionStrength(s) },
+        onUpdateSurfaceTintOpacity = { o -> viewModel.updateSurfaceTintOpacity(o) },
+        onUpdateSpecularMeniscus = { m -> viewModel.updateSpecularMeniscus(m) },
+        onResetLiquidGlassSettings = { viewModel.resetLiquidGlassSettings() },
+        folders = libraryFolders,
+        isScanning = isScanning,
+        onScanMediaStore = { viewModel.scanMediaStore() },
+        onAddFolder = { uri -> viewModel.addLibraryFolder(uri) },
+        onRemoveFolder = { folderUri -> viewModel.removeLibraryFolder(folderUri) },
+        downloadOptions = downloadOptions,
+        onUpdateDownloadOptions = { opts -> viewModel.updateDownloadOptions(opts) },
+        ytmAccountState = ytmAccountState,
+        isSyncingYtmAccount = isSyncingYtmAccount,
+        onSignInYtmClick = {
+            viewModel.closeSettings()
+            viewModel.openYtmLogin()
+        },
+        onSignOutYtmClick = { viewModel.signOutYtm() },
+        onForceSyncYtmClick = { viewModel.forceSyncYtm() },
+        onImportYtmPlaylistsClick = {
+            viewModel.closeSettings()
+            viewModel.openYtmPlaylistImport()
+        },
+        autoCheckUpdates = autoCheckUpdates,
+        onToggleAutoCheckUpdates = { enabled -> viewModel.setAutoCheckUpdates(enabled) },
+        updateUiState = updateUiState,
+        onCheckForUpdatesClick = { viewModel.checkForUpdatesManually() },
+        playbackPreferences = playbackPreferences,
+        onSelectWifiQuality = { q -> viewModel.setWifiStreamingQuality(q) },
+        onSelectMobileQuality = { q -> viewModel.setMobileStreamingQuality(q) },
+        onToggleGaplessPreload = { enabled -> viewModel.setGaplessPreloadEnabled(enabled) },
+        onTogglePauseAtZeroVolume = { enabled -> viewModel.setPauseAtZeroVolumeEnabled(enabled) },
+        dataUsageSummary = dataUsageSummary,
+        onOpenDataUsageClick = {
+            viewModel.closeSettings()
+            viewModel.openDataUsageSheet()
+        },
+        onUpdateDataUsageConfig = { cfg -> viewModel.updateDataUsageLimitConfig(cfg) },
+        onResetDataUsagePeriod = { viewModel.resetDataUsagePeriod() },
+        onClearDataUsageHistory = { viewModel.clearDataUsageHistory() },
+        onDownloadSuggestedTrack = { suggested ->
+            viewModel.closeSettings()
+            viewModel.openDownloadModal(suggested)
+        },
+        localScanFilterConfig = localScanFilterConfig,
+        onUpdateLocalScanFilterConfig = { cfg -> viewModel.updateLocalScanFilterConfig(cfg) },
+        lyricsProviders = lyricsProviders,
+        onMoveLyricsProviderPriority = { id, delta -> viewModel.moveLyricsProviderPriority(id, delta) },
+        onSetLyricsProviderEnabled = { id, enabled -> viewModel.setLyricsProviderEnabled(id, enabled) }
+    )
+
+    // Data Usage & Restrictions Detailed Sheet
+    com.xperience.player.ui.settings.DataUsageSheet(
+        isOpen = isDataUsageSheetOpen,
+        summary = dataUsageSummary,
+        onDismiss = { viewModel.closeDataUsageSheet() },
+        onUpdateConfig = { cfg -> viewModel.updateDataUsageLimitConfig(cfg) },
+        onResetPeriod = { viewModel.resetDataUsagePeriod() },
+        onClearHistory = { viewModel.clearDataUsageHistory() },
+        onDownloadSuggestedTrack = { suggested ->
+            viewModel.closeDataUsageSheet()
+            viewModel.openDownloadModal(suggested)
+        }
+    )
+
+    // Song Information Modal Sheet
+    com.xperience.player.ui.player.SongInfoSheet(
+        isOpen = trackForSongInfo != null,
+        track = trackForSongInfo,
+        playbackInfo = if (currentTrackPlaybackInfo?.trackId == trackForSongInfo?.id) {
+            currentTrackPlaybackInfo
+        } else {
+            inspectedSongInfo
+        },
+        outputDeviceName = outputDeviceName,
+        onDismiss = { viewModel.closeSongInfo() }
+    )
+
+    // App Auto-Update Modal Dialog
+    UpdateDialog(
+        uiState = updateUiState,
+        onDismiss = { viewModel.dismissUpdateDialog() },
+        onStartUpdate = { viewModel.startUpdateDownloadAndInstall() },
+        onCancelDownload = { viewModel.cancelUpdateDownload() },
+        onOpenInstallPermissionSettings = {
+            unknownSourcesLauncher.launch(
+                ApkInstaller.createUnknownAppSourcesSettingsIntent(context)
+            )
+        },
+        onRetryLaunchInstaller = { viewModel.retryLaunchVerifiedInstaller() }
+    )
+
+    // Fullscreen YouTube Music Account WebView Login Sheet
+    YouTubeLoginSheet(
+        isOpen = isYtmLoginSheetOpen,
+        onDismiss = { viewModel.closeYtmLogin() },
+        onCredentialsCaptured = { cookie, visitorData, dataSyncId ->
+            viewModel.onYtmCredentialsCaptured(cookie, visitorData, dataSyncId)
+        },
+        isValidating = isSyncingYtmAccount,
+        validationError = ytmLoginError
+    )
+
+    // Import YouTube Music Playlists Sheet
+    ImportYouTubePlaylistsSheet(
+        isOpen = isYtmPlaylistImportOpen,
+        isLoading = isLoadingYtmLibraryPlaylists,
+        libraryPlaylists = ytmLibraryPlaylists,
+        selectedIds = selectedYtmPlaylistIds,
+        existingLocalPlaylists = playlists,
+        isImporting = isImportingYtmPlaylists,
+        progressText = ytmImportProgressText,
+        errorMessage = ytmImportError,
+        onDismiss = { viewModel.closeYtmPlaylistImport() },
+        onRetry = { viewModel.loadYtmLibraryPlaylists() },
+        onToggleSelection = { id -> viewModel.toggleYtmPlaylistSelection(id) },
+        onSelectAll = { viewModel.selectAllYtmPlaylists() },
+        onClearSelection = { viewModel.clearYtmPlaylistSelection() },
+        onImportClick = { viewModel.importSelectedYtmPlaylists() }
+    )
+
+    // Local-Only Remove / Delete Playlist Confirmation Dialog
+    RemovePlaylistDialog(
+        playlist = playlistPendingDelete,
+        onDismiss = { viewModel.cancelDeletePlaylist() },
+        onConfirm = { viewModel.confirmDeletePlaylist() }
+    )
+
+    // Download Confirmation & Source Resolution Modal
+    (trackForDownload ?: playbackState.currentTrack)?.let { targetTrack ->
+        DownloadConfirmationModal(
+            isOpen = isDownloadModalOpen,
+            track = targetTrack,
+            candidates = downloadCandidates,
+            isSearching = isSearchingCandidates,
+            progressState = downloadProgressState,
+            defaultFormat = downloadOptions.defaultFormat,
+            onDismiss = { viewModel.closeDownloadModal() },
+            onConfirmDownload = { candidate, format ->
+                viewModel.startDownload(targetTrack, candidate, format)
+            }
+        )
+    }
+
+    // Create & Edit Playlist Dialog
+    CreatePlaylistDialog(
+        isOpen = isCreatePlaylistDialogOpen,
+        playlistToEdit = playlistToEdit,
+        onDismiss = { viewModel.closeCreatePlaylistDialog() },
+        onConfirm = { title, description, customCoverPath ->
+            viewModel.savePlaylist(
+                title = title,
+                description = description,
+                customCoverPath = customCoverPath.ifBlank { null }
+            )
+        }
+    )
+
+    // Add To Playlist Bottom Sheet
+    AddToPlaylistSheet(
+        track = trackForAddToPlaylist,
+        playlists = playlists,
+        isOpen = trackForAddToPlaylist != null,
+        onDismiss = { viewModel.closeAddToPlaylist() },
+        onSelectPlaylist = { playlist, track ->
+            viewModel.addTrackToPlaylist(playlist, track)
+            viewModel.closeAddToPlaylist()
+        },
+        onCreateNewPlaylistWithTrack = { track ->
+            viewModel.openCreatePlaylistDialog()
+        }
+    )
+
+    // Universal Track Options Sheet
+    TrackOptionsMenuSheet(
+        track = trackForOptionsMenu,
+        isLiked = trackForOptionsMenu?.let { likedTrackIds.contains(it.id) } ?: false,
+        isOpen = trackForOptionsMenu != null,
+        onDismiss = { viewModel.closeTrackOptions() },
+        onAddToPlaylist = { track ->
+            viewModel.closeTrackOptions()
+            viewModel.openAddToPlaylist(track)
+        },
+        onDownload = { track ->
+            viewModel.closeTrackOptions()
+            viewModel.openDownloadModal(track)
+        },
+        onToggleFavorite = { track ->
+            viewModel.toggleFavorite(track.id, fallback = track)
+        },
+        onSetAsRingtone = { track ->
+            viewModel.closeTrackOptions()
+            viewModel.openRingtoneEditor(track)
+        },
+        onSongInfo = { track ->
+            viewModel.closeTrackOptions()
+            viewModel.openSongInfo(track)
+        },
+        onPlay = { track -> viewModel.onSearchTrackClicked(track) },
+        onPlayNext = { track -> viewModel.playNext(track) },
+        onAddToQueue = { track -> viewModel.addToQueue(track) },
+        onGoToArtist = { artistName -> viewModel.openArtistFromMenu(artistName) },
+        onGoToAlbum = { track -> viewModel.openAlbumFromTrack(track) },
+        onDirectDownloadFormat = { track, format -> viewModel.downloadTrackDirect(track, format) },
+        contextualRemoveLabel = trackOptionsRemoveAction?.first,
+        onContextualRemove = trackOptionsRemoveAction?.second
+    )
+
+    AlbumOptionsMenuSheet(
+        album = albumForOptionsMenu,
+        isOpen = albumForOptionsMenu != null,
+        onDismiss = { viewModel.closeAlbumOptions() },
+        onOpenAlbum = { album -> viewModel.openAlbumDetail(album) },
+        onPlayAlbum = { album -> viewModel.playAlbumFromMenu(album, shuffle = false) },
+        onShuffleAlbum = { album -> viewModel.playAlbumFromMenu(album, shuffle = true) },
+        onPlayAlbumNext = { album -> viewModel.enqueueAlbumNext(album) },
+        onAddAlbumToQueue = { album -> viewModel.addAlbumToQueue(album) },
+        onGoToArtist = { artistName -> viewModel.openArtistFromMenu(artistName) }
+    )
+
+    ArtistOptionsMenuSheet(
+        artist = artistForOptionsMenu,
+        isOpen = artistForOptionsMenu != null,
+        onDismiss = { viewModel.closeArtistOptions() },
+        onGoToArtist = { artist -> viewModel.openArtistDetail(artist) },
+        onPlayTopSongs = { artist -> viewModel.playArtistFromMenu(artist, shuffle = false) },
+        onShuffleArtist = { artist -> viewModel.playArtistFromMenu(artist, shuffle = true) }
+    )
+
+    // Set as Ringtone Audio Trimmer & Clip Manager Sheet
+    RingtoneEditorSheet(
+        track = trackForRingtoneEditor,
+        isOpen = trackForRingtoneEditor != null,
+        onDismiss = { viewModel.closeRingtoneEditor() },
+        onPauseMainPlayback = { viewModel.pausePlayback() },
+        resolveAudioSource = { track -> viewModel.resolveLocalAudioUriForRingtone(track) }
+    )
+
+    // Custom Chromecast Device Picker Sheet (with Local Audio Output Switcher bridge)
+    CastDevicePickerSheet(
+        isOpen = isCastPickerOpen,
+        onDismiss = { viewModel.closeCastPicker() },
+        castState = castState,
+        routes = castRoutes,
+        isScanning = isCastScanning,
+        onStartDiscovery = { viewModel.castController.startActiveDiscovery() },
+        onStopDiscovery = { viewModel.castController.stopActiveDiscovery() },
+        onSelectRoute = { deviceId ->
+            viewModel.castController.selectRoute(deviceId)
+            viewModel.closeCastPicker()
+        },
+        onDisconnect = { viewModel.castController.disconnect() },
+        onSetVolume = { volume -> viewModel.castController.setVolume(volume) },
+        onToggleMute = { viewModel.castController.toggleMute() },
+        onOpenExpandedControls = { viewModel.openCastControls() },
+        onClearError = { viewModel.castController.clearError() },
+        currentLocalOutputName = outputDeviceName,
+        onOpenSystemAudioOutput = {
+            val act = context as? Activity
+            if (act != null) {
+                viewModel.closeCastPicker()
+                viewModel.onOpenOutputSwitcher(act)
+            }
+        },
+        accentColor = animatedAccentColor,
+        appColors = appColors
+    )
+
+    // Custom Expanded Chromecast Remote Control Sheet
+    CastExpandedControlsSheet(
+        isOpen = isCastControlsOpen,
+        onDismiss = { viewModel.closeCastControls() },
+        castState = castState,
+        onTogglePlayPause = { viewModel.castController.togglePlayPause() },
+        onSkipNext = { viewModel.castController.skipNext() },
+        onSkipPrevious = { viewModel.castController.skipPrevious() },
+        onSeekTo = { positionMs -> viewModel.castController.seekTo(positionMs) },
+        onSetVolume = { volume -> viewModel.castController.setVolume(volume) },
+        onToggleMute = { viewModel.castController.toggleMute() },
+        onToggleShuffle = { viewModel.castController.toggleShuffle() },
+        onCycleRepeatMode = { viewModel.castController.cycleRepeatMode() },
+        onJumpToQueueIndex = { index -> viewModel.castController.jumpToQueueIndex(index) },
+        onDisconnect = { viewModel.castController.disconnect() },
+        onOpenDevicePicker = { viewModel.openCastPicker() },
+        accentColor = animatedAccentColor,
+        appColors = appColors
+    )
 }
 
 @Composable

@@ -66,6 +66,7 @@ object ArtworkColorExtractor {
     private val FallbackDark = Color(0xFF0F1012)
     private val FallbackLight = Color(0xFFF4F6F9)
     private val colorCache = ConcurrentHashMap<String, Color>()
+    private val inFlightAccent = ConcurrentHashMap<String, Deferred<Color>>()
     private val ambientColorCache = ConcurrentHashMap<String, ArtistAmbientColors>()
     private val inFlightAmbient = ConcurrentHashMap<String, Deferred<ArtistAmbientColors>>()
     private val auroraColorCache = ConcurrentHashMap<String, AuroraColors>()
@@ -73,23 +74,32 @@ object ArtworkColorExtractor {
     private val extractionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun getCachedAuroraColors(artworkUri: String?): AuroraColors? {
-        val clean = artworkUri?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val clean = artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { MediaNetworkClients.ArtworkCacheKeyNormalizer.normalizeUrl(it) }
+            ?: return null
         return auroraColorCache[clean]
     }
 
     fun getCachedAccentColor(track: TrackItem?): Color? {
         if (track == null) return null
-        val cacheKey = track.artworkUri ?: track.artworkResId?.toString() ?: track.id
+        val cacheKey = track.artworkUri
+            ?.let { MediaNetworkClients.ArtworkCacheKeyNormalizer.normalizeUrl(it) }
+            ?: track.artworkResId?.toString()
+            ?: track.id
         return colorCache[cacheKey]
     }
 
     fun getCachedArtistAmbientColors(imageUri: String?): ArtistAmbientColors? {
-        val clean = imageUri?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val clean = imageUri?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { MediaNetworkClients.ArtworkCacheKeyNormalizer.normalizeUrl(it) }
+            ?: return null
         return ambientColorCache[clean]
     }
 
     fun cacheArtistAmbientColors(imageUri: String?, colors: ArtistAmbientColors) {
-        val clean = imageUri?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        val clean = imageUri?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { MediaNetworkClients.ArtworkCacheKeyNormalizer.normalizeUrl(it) }
+            ?: return
         if (ambientColorCache.size > 512) {
             ambientColorCache.clear()
         }
@@ -204,11 +214,36 @@ object ArtworkColorExtractor {
         }
     }
 
-    suspend fun extractAccentColor(context: Context, track: TrackItem?): Color = withContext(Dispatchers.IO) {
-        if (track == null) return@withContext DefaultAccent
-        val cacheKey = track.artworkUri ?: track.artworkResId?.toString() ?: track.id
-        colorCache[cacheKey]?.let { return@withContext it }
+    suspend fun extractAccentColor(context: Context, track: TrackItem?): Color {
+        if (track == null) return DefaultAccent
+        val normalizedUri = track.artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { MediaNetworkClients.ArtworkCacheKeyNormalizer.normalizeUrl(it) }
+        val cacheKey = normalizedUri ?: track.artworkResId?.toString() ?: track.id
+        colorCache[cacheKey]?.let { return it }
 
+        val appContext = context.applicationContext
+        val normalizedTrack = if (normalizedUri != null && normalizedUri != track.artworkUri) {
+            track.copy(artworkUri = normalizedUri)
+        } else {
+            track
+        }
+        val deferred = inFlightAccent.computeIfAbsent(cacheKey) {
+            extractionScope.async(start = CoroutineStart.LAZY) {
+                try {
+                    computeAccentColor(appContext, normalizedTrack, cacheKey)
+                } finally {
+                    inFlightAccent.remove(cacheKey)
+                }
+            }
+        }
+        return deferred.await()
+    }
+
+    private suspend fun computeAccentColor(
+        context: Context,
+        track: TrackItem,
+        cacheKey: String
+    ): Color {
         try {
             val bitmapPair: Pair<Bitmap, Boolean>? = when {
                 track.artworkResId != null -> {
@@ -252,7 +287,7 @@ object ArtworkColorExtractor {
                     colorCache.clear()
                 }
                 colorCache[cacheKey] = extractedColor
-                return@withContext extractedColor
+                return extractedColor
             }
         } catch (ce: CancellationException) {
             throw ce
@@ -262,11 +297,12 @@ object ArtworkColorExtractor {
             // Fallback safely on extreme bitmap decode pressure
         }
 
-        DefaultAccent
+        return DefaultAccent
     }
 
     suspend fun extractArtistAmbientColors(context: Context, imageUri: String?): ArtistAmbientColors {
         val cleanUri = imageUri?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { MediaNetworkClients.ArtworkCacheKeyNormalizer.normalizeUrl(it) }
             ?: return ArtistAmbientColors(FallbackDark, FallbackLight)
 
         ambientColorCache[cleanUri]?.let { return it }
@@ -343,6 +379,7 @@ object ArtworkColorExtractor {
      */
     suspend fun extractAuroraColors(context: Context, artworkUri: String?): AuroraColors {
         val cleanUri = artworkUri?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { MediaNetworkClients.ArtworkCacheKeyNormalizer.normalizeUrl(it) }
             ?: return DEFAULT_AURORA_COLORS
 
         auroraColorCache[cleanUri]?.let { return it }

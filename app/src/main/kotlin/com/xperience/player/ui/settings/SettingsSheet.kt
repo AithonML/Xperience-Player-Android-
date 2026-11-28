@@ -25,17 +25,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BrightnessAuto
+import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Refresh
@@ -43,6 +48,7 @@ import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -73,9 +79,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.xperience.player.domain.model.DataUsageSummary
+import com.xperience.player.domain.model.FolderDepthMode
+import com.xperience.player.domain.model.FolderListType
+import com.xperience.player.domain.model.FolderScanRule
+import com.xperience.player.domain.model.LocalScanFilterConfig
+import com.xperience.player.domain.model.ScanFilterMode
+import com.xperience.player.domain.model.StreamingAudioQuality
 import com.xperience.player.domain.model.YtmAccountState
 import com.xperience.player.domain.model.download.DownloadAudioFormat
 import com.xperience.player.domain.model.download.DownloadMetadataOptions
+import com.xperience.player.service.DataUsageTracker
+import com.xperience.player.service.LocalScanFilterEvaluator
+import com.xperience.player.service.PlaybackPreferences
 import com.xperience.player.ui.component.shapes.ContinuousRoundedRectangle
 import com.xperience.player.ui.home.LiquidGlassSettings
 import com.xperience.player.ui.liquidglass.LiquidGlassPill
@@ -141,11 +157,24 @@ fun SettingsSheet(
     onSignInYtmClick: () -> Unit = {},
     onSignOutYtmClick: () -> Unit = {},
     onForceSyncYtmClick: () -> Unit = {},
+    onImportYtmPlaylistsClick: () -> Unit = {},
     // App Updates State
     autoCheckUpdates: Boolean = true,
     onToggleAutoCheckUpdates: (Boolean) -> Unit = {},
     updateUiState: UpdateUiState = UpdateUiState(),
-    onCheckForUpdatesClick: () -> Unit = {}
+    onCheckForUpdatesClick: () -> Unit = {},
+    // Streaming Quality & Playback State
+    playbackPreferences: PlaybackPreferences = PlaybackPreferences(),
+    onSelectWifiQuality: (StreamingAudioQuality) -> Unit = {},
+    onSelectMobileQuality: (StreamingAudioQuality) -> Unit = {},
+    onToggleGaplessPreload: (Boolean) -> Unit = {},
+    onTogglePauseAtZeroVolume: (Boolean) -> Unit = {},
+    // Data Usage & Restrictions State
+    dataUsageSummary: DataUsageSummary = DataUsageSummary(),
+    onOpenDataUsageClick: () -> Unit = {},
+    // Local Scan Blacklist & Whitelist State
+    localScanFilterConfig: LocalScanFilterConfig = LocalScanFilterConfig(),
+    onUpdateLocalScanFilterConfig: (LocalScanFilterConfig) -> Unit = {}
 ) {
     if (!isOpen) return
 
@@ -179,6 +208,58 @@ fun SettingsSheet(
             }
             val path = it.toString()
             onUpdateDownloadOptions(downloadOptions.copy(downloadDirectory = path))
+        }
+    }
+
+    val blacklistFolderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        uri?.let {
+            runCatching {
+                val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                context.contentResolver.takePersistableUriPermission(it, takeFlags)
+            }
+            val uriStr = it.toString()
+            val updatedRules = localScanFilterConfig.rules
+                .filterNot { r -> r.uriOrPath == uriStr } +
+                FolderScanRule(
+                    uriOrPath = uriStr,
+                    displayName = LocalScanFilterEvaluator.formatFolderDisplayName(uriStr),
+                    listType = FolderListType.BLACKLIST,
+                    depthMode = FolderDepthMode.INHERIT_GLOBAL
+                )
+            onUpdateLocalScanFilterConfig(
+                localScanFilterConfig.copy(
+                    filterMode = ScanFilterMode.BLACKLIST,
+                    rules = updatedRules
+                )
+            )
+        }
+    }
+
+    val whitelistFolderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        uri?.let {
+            runCatching {
+                val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                context.contentResolver.takePersistableUriPermission(it, takeFlags)
+            }
+            val uriStr = it.toString()
+            val updatedRules = localScanFilterConfig.rules
+                .filterNot { r -> r.uriOrPath == uriStr } +
+                FolderScanRule(
+                    uriOrPath = uriStr,
+                    displayName = LocalScanFilterEvaluator.formatFolderDisplayName(uriStr),
+                    listType = FolderListType.WHITELIST,
+                    depthMode = FolderDepthMode.INHERIT_GLOBAL
+                )
+            onUpdateLocalScanFilterConfig(
+                localScanFilterConfig.copy(
+                    filterMode = ScanFilterMode.WHITELIST,
+                    rules = updatedRules
+                )
+            )
         }
     }
 
@@ -235,7 +316,8 @@ fun SettingsSheet(
                 appColors = appColors,
                 onSignInClick = onSignInYtmClick,
                 onSignOutClick = onSignOutYtmClick,
-                onForceSyncClick = onForceSyncYtmClick
+                onForceSyncClick = onForceSyncYtmClick,
+                onImportPlaylistsClick = onImportYtmPlaylistsClick
             )
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -584,6 +666,175 @@ fun SettingsSheet(
             Spacer(modifier = Modifier.height(24.dp))
 
             // =========================================================================
+            // SECTION 3B: Streaming Quality & Playback
+            // =========================================================================
+            Text(
+                text = stringResource(R.string.settings_audio_quality_title),
+                color = appColors.textPrimary,
+                fontFamily = GoogleSans,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 18.sp
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.settings_audio_quality_subtitle),
+                color = appColors.textSecondary,
+                fontFamily = PlusJakartaSans,
+                fontSize = 12.5.sp,
+                lineHeight = 17.sp
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // WiFi Quality Selector
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Wifi, contentDescription = null, tint = Color(0xFF0A84FF), modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = stringResource(R.string.settings_wifi_quality),
+                    color = appColors.textPrimary,
+                    fontFamily = GoogleSans,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 13.5.sp
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            QualityTierSelectorRow(
+                selected = playbackPreferences.wifiQuality,
+                accentColor = accentColor,
+                appColors = appColors,
+                onSelect = onSelectWifiQuality
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Mobile Data Quality Selector
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.CellTower, contentDescription = null, tint = Color(0xFFFF9F0A), modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = stringResource(R.string.settings_mobile_quality),
+                    color = appColors.textPrimary,
+                    fontFamily = GoogleSans,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 13.5.sp
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            QualityTierSelectorRow(
+                selected = playbackPreferences.mobileDataQuality,
+                accentColor = Color(0xFFFF9F0A),
+                appColors = appColors,
+                onSelect = onSelectMobileQuality
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Next-Song Preloading (Gapless) Toggle
+            SettingsToggleCard(
+                title = stringResource(R.string.settings_gapless_preload_title),
+                subtitle = stringResource(R.string.settings_gapless_preload_subtitle),
+                checked = playbackPreferences.gaplessPreloadEnabled,
+                onCheckedChange = onToggleGaplessPreload,
+                accentColor = accentColor,
+                appColors = appColors
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Pause at 0 Volume Toggle
+            SettingsToggleCard(
+                title = stringResource(R.string.settings_pause_zero_volume_title),
+                subtitle = stringResource(R.string.settings_pause_zero_volume_subtitle),
+                checked = playbackPreferences.pauseAtZeroVolumeEnabled,
+                onCheckedChange = onTogglePauseAtZeroVolume,
+                accentColor = accentColor,
+                appColors = appColors
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // =========================================================================
+            // SECTION 3C: Data Usage & Restrictions
+            // =========================================================================
+            Text(
+                text = stringResource(R.string.data_usage_title),
+                color = appColors.textPrimary,
+                fontFamily = GoogleSans,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 18.sp
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.data_usage_subtitle),
+                color = appColors.textSecondary,
+                fontFamily = PlusJakartaSans,
+                fontSize = 12.5.sp,
+                lineHeight = 17.sp
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(appColors.surfaceVariant)
+                    .border(1.dp, appColors.cardBorder, RoundedCornerShape(16.dp))
+                    .clickable(onClick = onOpenDataUsageClick)
+                    .padding(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Wifi, contentDescription = null, tint = Color(0xFF0A84FF), modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "${stringResource(R.string.data_usage_wifi)}: ${DataUsageTracker.formatBytes(dataUsageSummary.periodWifiBytes)}",
+                            fontFamily = GoogleSans,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp,
+                            color = appColors.textPrimary
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CellTower, contentDescription = null, tint = Color(0xFFFF9F0A), modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "${stringResource(R.string.data_usage_mobile)}: ${DataUsageTracker.formatBytes(dataUsageSummary.periodMobileBytes)}",
+                            fontFamily = GoogleSans,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp,
+                            color = appColors.textPrimary
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(accentColor.copy(alpha = 0.16f))
+                        .padding(vertical = 9.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.DataUsage, contentDescription = null, tint = accentColor, modifier = Modifier.size(17.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.data_usage_open_button),
+                        fontFamily = GoogleSans,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.5.sp,
+                        color = accentColor
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // =========================================================================
             // SECTION 4: Local Music Folders
             // =========================================================================
             Text(
@@ -739,6 +990,245 @@ fun SettingsSheet(
                         }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
+                }
+            }
+
+            // Local Scan Blacklist & Whitelist + Shallow/Deep Controls
+            Spacer(modifier = Modifier.height(14.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(appColors.surfaceVariant)
+                    .border(1.dp, appColors.cardBorder, RoundedCornerShape(16.dp))
+                    .padding(14.dp)
+            ) {
+                Text(
+                    text = stringResource(R.string.scan_filter_title),
+                    color = appColors.textPrimary,
+                    fontFamily = GoogleSans,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.5.sp
+                )
+                Spacer(modifier = Modifier.height(3.dp))
+                Text(
+                    text = stringResource(R.string.scan_filter_subtitle),
+                    color = appColors.textSecondary,
+                    fontFamily = PlusJakartaSans,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Filter Mode Pills: All / Blacklist / Whitelist
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    ScanFilterMode.entries.forEach { mode ->
+                        val isSelected = localScanFilterConfig.filterMode == mode
+                        val pillTint = when (mode) {
+                            ScanFilterMode.BLACKLIST -> Color(0xFFFF453A)
+                            ScanFilterMode.WHITELIST -> Color(0xFF34C759)
+                            ScanFilterMode.ALL -> accentColor
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (isSelected) pillTint.copy(alpha = 0.2f) else Color.Transparent)
+                                .border(
+                                    1.dp,
+                                    if (isSelected) pillTint else appColors.cardBorder,
+                                    RoundedCornerShape(10.dp)
+                                )
+                                .clickable {
+                                    onUpdateLocalScanFilterConfig(localScanFilterConfig.copy(filterMode = mode))
+                                }
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = mode.displayName,
+                                fontFamily = GoogleSans,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 11.5.sp,
+                                color = if (isSelected) pillTint else appColors.textPrimary,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Global Shallow vs Deep Scan Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.scan_filter_global_deep_title),
+                            fontFamily = GoogleSans,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                            color = appColors.textPrimary
+                        )
+                        Text(
+                            text = stringResource(R.string.scan_filter_global_deep_subtitle),
+                            fontFamily = PlusJakartaSans,
+                            fontSize = 11.5.sp,
+                            lineHeight = 15.sp,
+                            color = appColors.textSecondary
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Switch(
+                        checked = localScanFilterConfig.globalDeepScan,
+                        onCheckedChange = { deep ->
+                            onUpdateLocalScanFilterConfig(localScanFilterConfig.copy(globalDeepScan = deep))
+                        },
+                        colors = SwitchDefaults.colors(checkedTrackColor = accentColor)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Add to Blacklist / Add to Whitelist Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0x1CFF453A))
+                            .border(1.dp, Color(0x45FF453A), RoundedCornerShape(10.dp))
+                            .clickable { blacklistFolderPickerLauncher.launch(null) }
+                            .padding(vertical = 9.dp, horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Block, contentDescription = null, tint = Color(0xFFFF453A), modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = stringResource(R.string.scan_filter_add_blacklist),
+                            fontFamily = GoogleSans,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 11.5.sp,
+                            color = Color(0xFFFF453A),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0x1C34C759))
+                            .border(1.dp, Color(0x4534C759), RoundedCornerShape(10.dp))
+                            .clickable { whitelistFolderPickerLauncher.launch(null) }
+                            .padding(vertical = 9.dp, horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF34C759), modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = stringResource(R.string.scan_filter_add_whitelist),
+                            fontFamily = GoogleSans,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 11.5.sp,
+                            color = Color(0xFF34C759),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                // Configured Folder Rules with Clear Visual Blacklist / Whitelist Badges + Per-Folder Depth Cycle
+                if (localScanFilterConfig.rules.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    localScanFilterConfig.rules.forEach { rule ->
+                        val isBlacklist = rule.listType == FolderListType.BLACKLIST
+                        val badgeColor = if (isBlacklist) Color(0xFFFF453A) else Color(0xFF34C759)
+                        val badgeIcon = if (isBlacklist) Icons.Default.Block else Icons.Default.CheckCircle
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                                .background(badgeColor.copy(alpha = 0.08f))
+                                .border(1.dp, badgeColor.copy(alpha = 0.35f), RoundedCornerShape(11.dp))
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(badgeIcon, contentDescription = null, tint = badgeColor, modifier = Modifier.size(17.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = rule.displayName,
+                                    fontFamily = PlusJakartaSans,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.5.sp,
+                                    color = appColors.textPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = if (isBlacklist) "Blacklisted" else "Whitelisted",
+                                    fontFamily = GoogleSans,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 10.5.sp,
+                                    color = badgeColor
+                                )
+                            }
+                            // Per-folder depth mode pill: Global -> Shallow -> Deep
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(if (appColors.isDark) Color(0x22FFFFFF) else Color(0x12000000))
+                                    .clickable {
+                                        val nextDepth = when (rule.depthMode) {
+                                            FolderDepthMode.INHERIT_GLOBAL -> FolderDepthMode.SHALLOW
+                                            FolderDepthMode.SHALLOW -> FolderDepthMode.DEEP
+                                            FolderDepthMode.DEEP -> FolderDepthMode.INHERIT_GLOBAL
+                                        }
+                                        val updated = localScanFilterConfig.rules.map {
+                                            if (it.uriOrPath == rule.uriOrPath) it.copy(depthMode = nextDepth) else it
+                                        }
+                                        onUpdateLocalScanFilterConfig(localScanFilterConfig.copy(rules = updated))
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = rule.depthMode.displayName,
+                                    fontFamily = GoogleSans,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 10.5.sp,
+                                    color = appColors.textPrimary
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                            IconButton(
+                                onClick = {
+                                    val updated = localScanFilterConfig.rules.filterNot { it.uriOrPath == rule.uriOrPath }
+                                    onUpdateLocalScanFilterConfig(localScanFilterConfig.copy(rules = updated))
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteOutline,
+                                    contentDescription = "Remove rule",
+                                    tint = Color(0xFFFF6B6B),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -949,6 +1439,102 @@ fun SettingsSheet(
 }
 
 @Composable
+private fun QualityTierSelectorRow(
+    selected: StreamingAudioQuality,
+    accentColor: Color,
+    appColors: AppThemeColors,
+    onSelect: (StreamingAudioQuality) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        StreamingAudioQuality.entries.forEach { tier ->
+            val isSelected = selected == tier
+            val label = when (tier) {
+                StreamingAudioQuality.LOW_64 -> "Low\n64k"
+                StreamingAudioQuality.REGULAR_128 -> "Regular\n128k"
+                StreamingAudioQuality.HIGH_160 -> "High\n160k+"
+                StreamingAudioQuality.FLAC_LOSSLESS -> "FLAC\nLossless"
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(ContinuousRoundedRectangle(percent = 28))
+                    .background(
+                        if (isSelected) accentColor.copy(alpha = 0.2f)
+                        else appColors.surfaceVariant
+                    )
+                    .border(
+                        width = if (isSelected) 1.3.dp else 1.dp,
+                        color = if (isSelected) accentColor else appColors.cardBorder,
+                        shape = ContinuousRoundedRectangle(percent = 28)
+                    )
+                    .clickable { onSelect(tier) }
+                    .padding(vertical = 9.dp, horizontal = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = label,
+                    fontFamily = GoogleSans,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    fontSize = 11.sp,
+                    lineHeight = 14.sp,
+                    color = if (isSelected) accentColor else appColors.textPrimary,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsToggleCard(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    accentColor: Color,
+    appColors: AppThemeColors
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(appColors.surfaceVariant)
+            .border(1.dp, appColors.cardBorder, RoundedCornerShape(14.dp))
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                fontFamily = GoogleSans,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.sp,
+                color = appColors.textPrimary
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = subtitle,
+                fontFamily = PlusJakartaSans,
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                color = appColors.textSecondary
+            )
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(checkedTrackColor = accentColor)
+        )
+    }
+}
+
+@Composable
 private fun DownloadOptionCheckItem(
     title: String,
     isChecked: Boolean,
@@ -1125,7 +1711,8 @@ private fun YouTubeMusicAccountSection(
     appColors: AppThemeColors,
     onSignInClick: () -> Unit,
     onSignOutClick: () -> Unit,
-    onForceSyncClick: () -> Unit
+    onForceSyncClick: () -> Unit,
+    onImportPlaylistsClick: () -> Unit = {}
 ) {
     Text(
         text = "YouTube Music Account",
@@ -1314,6 +1901,39 @@ private fun YouTubeMusicAccountSection(
                         fontSize = 13.sp
                     )
                 }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (appColors.isDark) Color(0x1FFF2D55) else Color(0x14D90429))
+                    .border(
+                        1.dp,
+                        if (appColors.isDark) Color(0x55FF2D55) else Color(0x40D90429),
+                        RoundedCornerShape(12.dp)
+                    )
+                    .clickable(enabled = !isSyncing, onClick = onImportPlaylistsClick)
+                    .padding(vertical = 10.dp, horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.PlaylistPlay,
+                    contentDescription = "Import YouTube Music Playlists",
+                    tint = if (appColors.isDark) Color(0xFFFF4D6D) else Color(0xFFD90429),
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Import YouTube Music Playlists",
+                    color = if (appColors.isDark) Color(0xFFFF4D6D) else Color(0xFFD90429),
+                    fontFamily = GoogleSans,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp
+                )
             }
         } else {
             Row(

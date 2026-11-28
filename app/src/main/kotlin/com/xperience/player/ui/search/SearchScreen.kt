@@ -14,7 +14,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -718,7 +720,8 @@ private fun ExploreSearchContent(
                         items = section.items,
                         key = { itemIdx, category ->
                             "mood_card_${sectionIndex}_${itemIdx}_${category.id}"
-                        }
+                        },
+                        contentType = { _, _ -> "mood_category_card" }
                     ) { _, category ->
                         YtmMoodCategoryCard(
                             category = category,
@@ -729,7 +732,8 @@ private fun ExploreSearchContent(
 
                     item(
                         key = "mood_section_footer_$sectionIndex",
-                        span = { GridItemSpan(maxLineSpan) }
+                        span = { GridItemSpan(maxLineSpan) },
+                        contentType = "spacer"
                     ) {
                         Spacer(modifier = Modifier.height(8.dp))
                     }
@@ -739,7 +743,8 @@ private fun ExploreSearchContent(
             else -> {
                 item(
                     key = "fallback_genre_header",
-                    span = { GridItemSpan(maxLineSpan) }
+                    span = { GridItemSpan(maxLineSpan) },
+                    contentType = "section_header"
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         SearchSectionHeader(
@@ -753,7 +758,8 @@ private fun ExploreSearchContent(
 
                 lazyGridItemsIndexed(
                     items = fallbackGenres,
-                    key = { idx, genre -> "fallback_genre_${idx}_${genre.id}" }
+                    key = { idx, genre -> "fallback_genre_${idx}_${genre.id}" },
+                    contentType = { _, _ -> "fallback_genre_card" }
                 ) { _, genre ->
                     FallbackGenreCard(
                         genre = genre,
@@ -1151,7 +1157,8 @@ private fun MoodCategoryDetailContent(
             } else {
                 item(
                     key = "mood_playlists_row",
-                    span = { GridItemSpan(maxLineSpan) }
+                    span = { GridItemSpan(maxLineSpan) },
+                    contentType = "horizontal_row"
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         LazyRow(
@@ -1159,7 +1166,8 @@ private fun MoodCategoryDetailContent(
                         ) {
                             itemsIndexed(
                                 items = playlists,
-                                key = { idx, item -> "mood_pl_${idx}_${item.id}" }
+                                key = { idx, item -> "mood_pl_${idx}_${item.id}" },
+                                contentType = { _, _ -> "mood_playlist_card" }
                             ) { _, playlist ->
                                 MoodPlaylistCard(
                                     playlist = playlist,
@@ -1176,7 +1184,8 @@ private fun MoodCategoryDetailContent(
         if (albums.isNotEmpty()) {
             item(
                 key = "mood_albums_header",
-                span = { GridItemSpan(maxLineSpan) }
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "section_header"
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     if (playlists.isNotEmpty() && songs.isEmpty()) {
@@ -1193,7 +1202,8 @@ private fun MoodCategoryDetailContent(
             if (playlists.isEmpty() && songs.isEmpty()) {
                 lazyGridItemsIndexed(
                     items = albums,
-                    key = { idx, album -> "mood_album_grid_${idx}_${album.id}" }
+                    key = { idx, album -> "mood_album_grid_${idx}_${album.id}" },
+                    contentType = { _, _ -> "search_album_grid_card" }
                 ) { _, album ->
                     SearchAlbumCard(
                         album = album,
@@ -1205,7 +1215,8 @@ private fun MoodCategoryDetailContent(
             } else {
                 item(
                     key = "mood_albums_row",
-                    span = { GridItemSpan(maxLineSpan) }
+                    span = { GridItemSpan(maxLineSpan) },
+                    contentType = "horizontal_row"
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         LazyRow(
@@ -1213,7 +1224,8 @@ private fun MoodCategoryDetailContent(
                         ) {
                             itemsIndexed(
                                 items = albums,
-                                key = { idx, album -> "mood_album_${idx}_${album.id}" }
+                                key = { idx, album -> "mood_album_${idx}_${album.id}" },
+                                contentType = { _, _ -> "search_album_card" }
                             ) { _, album ->
                                 SearchAlbumCard(
                                     album = album,
@@ -1566,7 +1578,8 @@ private fun SearchResultsListContent(
 
                     item(
                         key = "all_artists_row",
-                        span = { GridItemSpan(maxLineSpan) }
+                        span = { GridItemSpan(maxLineSpan) },
+                        contentType = "horizontal_row"
                     ) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             LazyRow(
@@ -1574,7 +1587,8 @@ private fun SearchResultsListContent(
                             ) {
                                 itemsIndexed(
                                     items = searchResults.artists,
-                                    key = { idx, artist -> "all_artist_${idx}_${artist.id}" }
+                                    key = { idx, artist -> "all_artist_${idx}_${artist.id}" },
+                                    contentType = { _, _ -> "search_artist_card" }
                                 ) { _, artist ->
                                     SearchArtistCard(
                                         artist = artist,
@@ -1592,7 +1606,8 @@ private fun SearchResultsListContent(
                 if (searchResults.albums.isNotEmpty()) {
                     item(
                         key = "all_albums_header",
-                        span = { GridItemSpan(maxLineSpan) }
+                        span = { GridItemSpan(maxLineSpan) },
+                        contentType = "section_header"
                     ) {
                         SearchSectionHeader(
                             title = "Albums",
@@ -1605,14 +1620,16 @@ private fun SearchResultsListContent(
 
                     item(
                         key = "all_albums_row",
-                        span = { GridItemSpan(maxLineSpan) }
+                        span = { GridItemSpan(maxLineSpan) },
+                        contentType = "horizontal_row"
                     ) {
                         LazyRow(
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             itemsIndexed(
                                 items = searchResults.albums,
-                                key = { idx, album -> "all_album_${idx}_${album.id}" }
+                                key = { idx, album -> "all_album_${idx}_${album.id}" },
+                                contentType = { _, _ -> "search_album_card" }
                             ) { _, album ->
                                 SearchAlbumCard(
                                     album = album,
@@ -1629,7 +1646,8 @@ private fun SearchResultsListContent(
                 if (searchResults.songs.isEmpty()) {
                     item(
                         key = "songs_empty",
-                        span = { GridItemSpan(maxLineSpan) }
+                        span = { GridItemSpan(maxLineSpan) },
+                        contentType = "empty_state"
                     ) {
                         EmptySearchResultsState(query = searchQuery)
                     }
@@ -1651,14 +1669,16 @@ private fun SearchResultsListContent(
                 if (searchResults.artists.isEmpty()) {
                     item(
                         key = "artists_empty",
-                        span = { GridItemSpan(maxLineSpan) }
+                        span = { GridItemSpan(maxLineSpan) },
+                        contentType = "empty_state"
                     ) {
                         EmptySearchResultsState(query = searchQuery)
                     }
                 } else {
                     lazyGridItemsIndexed(
                         items = searchResults.artists,
-                        key = { idx, artist -> "artist_grid_${idx}_${artist.id}" }
+                        key = { idx, artist -> "artist_grid_${idx}_${artist.id}" },
+                        contentType = { _, _ -> "search_artist_grid_card" }
                     ) { _, artist ->
                         SearchArtistCard(
                             artist = artist,
@@ -1675,14 +1695,16 @@ private fun SearchResultsListContent(
                 if (searchResults.albums.isEmpty()) {
                     item(
                         key = "albums_empty",
-                        span = { GridItemSpan(maxLineSpan) }
+                        span = { GridItemSpan(maxLineSpan) },
+                        contentType = "empty_state"
                     ) {
                         EmptySearchResultsState(query = searchQuery)
                     }
                 } else {
                     lazyGridItemsIndexed(
                         items = searchResults.albums,
-                        key = { idx, album -> "album_grid_${idx}_${album.id}" }
+                        key = { idx, album -> "album_grid_${idx}_${album.id}" },
+                        contentType = { _, _ -> "search_album_grid_card" }
                     ) { _, album ->
                         SearchAlbumCard(
                             album = album,
@@ -1710,7 +1732,8 @@ private fun LazyGridScope.searchTrackRows(
     lazyGridItemsIndexed(
         items = tracks,
         key = { idx, track -> "${keyPrefix}_${idx}_${track.id}" },
-        span = { _, _ -> GridItemSpan(maxLineSpan) }
+        span = { _, _ -> GridItemSpan(maxLineSpan) },
+        contentType = { _, _ -> "search_track_row" }
     ) { _, track ->
         val isLiked = track.id in likedTrackIds || track.isLiked
         val isCurrentTrack = currentPlayingTrackId != null && track.id == currentPlayingTrackId
@@ -1836,12 +1859,18 @@ private fun SearchTrackItemRow(
             }
             .clip(RoundedCornerShape(14.dp))
             .background(rowBackgroundColor)
-            .clickable(
+            .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     onClick()
+                },
+                onLongClick = onMoreClick?.let { cb ->
+                    {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        cb()
+                    }
                 }
             )
             .padding(horizontal = 10.dp, vertical = 8.dp)
@@ -2374,8 +2403,10 @@ private fun AlbumGradientPlaceholder(title: String) {
     }
 }
 
+private val WhitespaceRegex = Regex("\\s+")
+
 private fun computeArtistInitials(name: String): String {
-    val parts = name.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+    val parts = name.trim().split(WhitespaceRegex).filter { it.isNotEmpty() }
     return when {
         parts.isEmpty() -> "?"
         parts.size == 1 -> parts[0].take(2).uppercase()

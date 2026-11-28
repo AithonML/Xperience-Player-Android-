@@ -41,7 +41,7 @@ class LyricsProviderService(private val context: Context) {
         if (!exists()) mkdirs()
     }
 
-    private val httpClient = OkHttpClient.Builder()
+    private val httpClient = MediaNetworkClients.sharedOkHttpClient.newBuilder()
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .addInterceptor { chain ->
@@ -53,10 +53,16 @@ class LyricsProviderService(private val context: Context) {
                 .build()
             chain.proceed(request)
         }
+        .addNetworkInterceptor(
+            MediaNetworkClients.createDataUsageInterceptor(
+                category = com.xperience.player.domain.model.DataUsageCategory.LYRICS,
+                appContextProvider = { context.applicationContext }
+            )
+        )
         .build()
 
     private val providers = mutableListOf<LyricsProviderConfig>()
-    private val memoryCache = ConcurrentHashMap<String, LyricsResolutionResult>()
+    private val memoryCache = BoundedLruMap<String, LyricsResolutionResult>(100)
 
     init {
         loadProvidersConfig()
@@ -526,9 +532,9 @@ class LyricsProviderService(private val context: Context) {
             }
 
             val lineText = if (hasSpans) {
-                fullTextBuilder.toString().replace(Regex("\\s+"), " ").trim()
+                fullTextBuilder.toString().replace(WHITESPACE_REGEX, " ").trim()
             } else {
-                innerContent.replace(Regex("<[^>]+>"), " ").replace(Regex("\\s+"), " ").trim()
+                innerContent.replace(XML_TAG_REGEX, " ").replace(WHITESPACE_REGEX, " ").trim()
             }
 
             if (lineText.isNotBlank()) {
@@ -714,18 +720,14 @@ class LyricsProviderService(private val context: Context) {
     // =========================================================================
     private fun cleanTrackTitle(rawTitle: String): String {
         if (rawTitle.isBlank()) return ""
-        val noisePattern = Pattern.compile(
-            "\\s*[(\\[]\\s*(official\\s+(music\\s+)?video|official\\s+audio|official\\s+lyric\\s+video|lyrics?|visualizer|audio|hd|4k|remastered[^)\\]]*)\\s*[)\\]]",
-            Pattern.CASE_INSENSITIVE
-        )
-        val cleaned = noisePattern.matcher(rawTitle).replaceAll("").trim()
+        val cleaned = NOISE_TITLE_PATTERN.matcher(rawTitle).replaceAll("").trim()
         return if (cleaned.isBlank()) rawTitle.trim() else cleaned
     }
 
     private fun cleanArtistName(rawArtist: String): String {
         if (rawArtist.isBlank()) return ""
         val cleaned = rawArtist.replace(" - Topic", "", ignoreCase = true).trim()
-        val split = cleaned.split(Regex("[,;&]"), limit = 2)
+        val split = cleaned.split(ARTIST_SPLIT_REGEX, limit = 2)
         return if (split[0].isBlank()) cleaned else split[0].trim()
     }
 
@@ -743,5 +745,12 @@ class LyricsProviderService(private val context: Context) {
 
     companion object {
         private const val TAG = "LyricsProviderService"
+        private val WHITESPACE_REGEX = Regex("\\s+")
+        private val XML_TAG_REGEX = Regex("<[^>]+>")
+        private val ARTIST_SPLIT_REGEX = Regex("[,;&]")
+        private val NOISE_TITLE_PATTERN = Pattern.compile(
+            "\\s*[(\\[]\\s*(official\\s+(music\\s+)?video|official\\s+audio|official\\s+lyric\\s+video|lyrics?|visualizer|audio|hd|4k|remastered[^)\\]]*)\\s*[)\\]]",
+            Pattern.CASE_INSENSITIVE
+        )
     }
 }

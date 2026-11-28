@@ -188,7 +188,7 @@ fun NowPlayingSidebar(
     initialTab: NowPlayingSidebarTab = NowPlayingSidebarTab.QUEUE,
     onMoveQueueItem: (fromIndex: Int, toIndex: Int) -> Unit = { _, _ -> },
     onPlayQueueIndex: (Int) -> Unit = {},
-    selectedVisualizer: VisualizerDefinition = VisualizerRepository.BuiltInPresets.first(),
+    selectedVisualizer: VisualizerDefinition = VisualizerRepository.DefaultPreset,
     availableVisualizers: List<VisualizerDefinition> = emptyList(),
     onSelectVisualizer: (VisualizerDefinition) -> Unit = {},
     onImportVisualizer: (String, String?) -> Unit = { _, _ -> },
@@ -209,9 +209,17 @@ fun NowPlayingSidebar(
     onOpenOutputSwitcher: () -> Unit = {},
     onOpenAmbientMode: () -> Unit = {},
     onSetAsRingtone: (TrackItem) -> Unit = {},
+    onPlayNext: (TrackItem) -> Unit = {},
+    onAddToQueue: (TrackItem) -> Unit = {},
+    onGoToAlbum: (TrackItem) -> Unit = {},
+    onOpenSongInfo: (TrackItem) -> Unit = {},
+    onDirectDownloadFormat: (TrackItem, com.xperience.player.domain.model.download.DownloadAudioFormat) -> Unit = { _, _ -> },
     castState: CastPlaybackState = CastPlaybackState(),
     castRouteCount: Int = 0,
-    onOpenCastPicker: () -> Unit = onOpenOutputSwitcher
+    onOpenCastPicker: () -> Unit = onOpenOutputSwitcher,
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long> = remember { kotlinx.coroutines.flow.MutableStateFlow(playbackState.currentPositionMs) },
+    lyricsPlaybackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long> = playbackPositionMsFlow,
+    onSeekToLyricPosition: ((Long) -> Unit)? = null
 ) {
     val track = playbackState.currentTrack ?: return
     val context = LocalContext.current
@@ -279,9 +287,13 @@ fun NowPlayingSidebar(
     }
 
     val onSeekToPosition: (Long) -> Unit = { posMs ->
-        val total = playbackState.durationMs
-        if (total > 0L) {
-            onSeekToFraction((posMs.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+        if (onSeekToLyricPosition != null) {
+            onSeekToLyricPosition(posMs)
+        } else {
+            val total = playbackState.durationMs
+            if (total > 0L) {
+                onSeekToFraction((posMs.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+            }
         }
     }
 
@@ -330,7 +342,6 @@ fun NowPlayingSidebar(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer()
                     .layerBackdrop(sidebarBackdrop)
             ) {
                 SidebarArtworkBackdropStage(
@@ -340,7 +351,7 @@ fun NowPlayingSidebar(
                     isCanvasPaused = activeTab == NowPlayingSidebarTab.LYRICS,
                     heroHeight = heroArtworkHeight,
                     selectedVisualizer = selectedVisualizer,
-                    currentPositionMs = playbackState.currentPositionMs,
+                    positionMsProvider = { playbackPositionMsFlow.value },
                     durationMs = playbackState.durationMs,
                     accentColor = accentColor,
                     appColors = appColors,
@@ -436,30 +447,32 @@ fun NowPlayingSidebar(
                         .padding(horizontal = 16.dp)
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                if (dspState.isNightcoreEnabled || dspState.isEqOrSpeedActive || sleepTimerState.isActive) {
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                // 1-Click Nightcore pill + Visual Sleep Timer badge + DSP quick button
-                NowPlayingDspQuickBar(
-                    dspState = dspState,
-                    sleepTimerState = sleepTimerState,
-                    onToggleNightcore = { dspController.toggleNightcore() },
-                    onOpenAudioEffects = { tab ->
-                        audioEffectsInitialTab = tab
-                        showAudioEffectsSheet = true
-                    },
-                    accentColor = accentColor,
-                    appColors = appColors,
-                    compact = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp)
-                )
+                    // Active-only Nightcore / Sleep Timer / DSP badges
+                    NowPlayingDspQuickBar(
+                        dspState = dspState,
+                        sleepTimerState = sleepTimerState,
+                        onToggleNightcore = { dspController.toggleNightcore() },
+                        onOpenAudioEffects = { tab ->
+                            audioEffectsInitialTab = tab
+                            showAudioEffectsSheet = true
+                        },
+                        accentColor = accentColor,
+                        appColors = appColors,
+                        compact = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp)
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // Squiggly progress bar + Heart like toggle row
                 SidebarSeekAndLikeRow(
-                    currentPositionMs = playbackState.currentPositionMs,
+                    playbackPositionMsFlow = playbackPositionMsFlow,
                     durationMs = playbackState.durationMs,
                     isPlaying = playbackState.isPlaying,
                     isLiked = isLiked,
@@ -540,7 +553,7 @@ fun NowPlayingSidebar(
                             NowPlayingSidebarTab.LYRICS -> {
                                 SynchronizedLyricsView(
                                     lines = lyrics,
-                                    currentPositionMs = playbackState.currentPositionMs,
+                                    playbackPositionMsFlow = lyricsPlaybackPositionMsFlow,
                                     providerName = lyricsProviderName,
                                     accentColor = accentColor,
                                     appColors = appColors,
@@ -583,44 +596,73 @@ fun NowPlayingSidebar(
         isOpen = showDetailsSheet,
         onDismissRequest = { showDetailsSheet = false },
         sheetState = detailsSheetState,
-        containerColor = if (appColors.isDark) Color(0xFF141720) else Color(0xFFFFFFFF),
-        dialogMaxWidth = 540.dp,
+        containerColor = if (appColors.isDark) Color(0xFF14161D) else Color(0xFFFFFFFF),
+        dialogMaxWidth = 500.dp,
         showDragHandle = false
     ) {
-        SongDetailsSheetContent(
+        com.xperience.player.ui.components.TrackOptionsMenuContent(
             track = track,
-            accentColor = accentColor,
-            appColors = appColors,
-            selectedVisualizerName = selectedVisualizer.name,
-            isVisualizerActive = selectedVisualizer.renderMode != VisualizerRenderMode.None,
-            outputDeviceName = outputDeviceName,
+            isLiked = isLiked,
+            onDismiss = { showDetailsSheet = false },
+            onAddToPlaylist = {
+                showDetailsSheet = false
+                onAddToPlaylist(track)
+            },
+            onDownload = {
+                showDetailsSheet = false
+                onDownloadTrack(track)
+            },
+            onToggleFavorite = { onToggleFavorite(track.id) },
+            onSetAsRingtone = {
+                showDetailsSheet = false
+                onSetAsRingtone(track)
+            },
+            onSongInfo = {
+                showDetailsSheet = false
+                onOpenSongInfo(track)
+            },
+            onPlayNext = {
+                showDetailsSheet = false
+                onPlayNext(track)
+            },
+            onAddToQueue = {
+                showDetailsSheet = false
+                onAddToQueue(track)
+            },
+            onGoToArtist = if (track.artist.isNotBlank() && onArtistClick != null) {
+                {
+                    showDetailsSheet = false
+                    onArtistClick.invoke(track.artist)
+                }
+            } else {
+                null
+            },
+            onGoToAlbum = {
+                showDetailsSheet = false
+                onGoToAlbum(track)
+            },
+            onDirectDownloadFormat = { format ->
+                showDetailsSheet = false
+                onDirectDownloadFormat(track, format)
+            },
+            isNowPlayingContext = true,
             dspState = dspState,
             sleepTimerState = sleepTimerState,
+            selectedVisualizerName = selectedVisualizer.name,
+            isVisualizerActive = selectedVisualizer.renderMode != VisualizerRenderMode.None,
             onToggleNightcore = { dspController.toggleNightcore() },
             onOpenAudioEffectsTab = { tab ->
                 showDetailsSheet = false
                 audioEffectsInitialTab = tab
                 showAudioEffectsSheet = true
             },
-            onOpenVisualizerClick = {
-                showDetailsSheet = false
-                showVisualizerSheet = true
-            },
-            onDownloadClick = {
-                showDetailsSheet = false
-                onDownloadTrack(track)
-            },
-            onAddToPlaylistClick = {
-                showDetailsSheet = false
-                onAddToPlaylist(track)
-            },
-            onOpenAmbientModeClick = {
+            onOpenAmbientMode = {
                 showDetailsSheet = false
                 onOpenAmbientMode()
             },
-            onSetAsRingtoneClick = {
+            onOpenVisualizer = {
                 showDetailsSheet = false
-                onSetAsRingtone(track)
+                showVisualizerSheet = true
             }
         )
     }
@@ -674,7 +716,7 @@ private fun SidebarArtworkBackdropStage(
     isCanvasPaused: Boolean,
     heroHeight: Dp,
     selectedVisualizer: VisualizerDefinition,
-    currentPositionMs: Long,
+    positionMsProvider: () -> Long,
     durationMs: Long,
     accentColor: Color,
     appColors: AppThemeColors,
@@ -807,7 +849,7 @@ private fun SidebarArtworkBackdropStage(
         if (selectedVisualizer.renderMode != VisualizerRenderMode.None) {
             GpuMusicVisualizer(
                 definition = selectedVisualizer,
-                currentPositionMs = currentPositionMs,
+                positionMsProvider = positionMsProvider,
                 durationMs = durationMs,
                 isPlaying = isPlaying,
                 currentTrack = track,
@@ -1375,7 +1417,7 @@ private fun SidebarTrackInfoHeader(
 
 @Composable
 private fun SidebarSeekAndLikeRow(
-    currentPositionMs: Long,
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long>,
     durationMs: Long,
     isPlaying: Boolean,
     isLiked: Boolean,
@@ -1400,7 +1442,7 @@ private fun SidebarSeekAndLikeRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         SquigglyProgressBar(
-            currentPositionMs = currentPositionMs,
+            playbackPositionMsFlow = playbackPositionMsFlow,
             durationMs = durationMs,
             isPlaying = isPlaying,
             accentColor = accentColor,

@@ -26,6 +26,7 @@ import com.xperience.player.domain.model.TopPickItem
 import com.xperience.player.domain.model.TopPickKind
 import com.xperience.player.domain.model.TrackItem
 import com.xperience.player.domain.model.UserPlaylist
+import com.xperience.player.domain.model.YouTubeMusicLibraryPlaylist
 import com.xperience.player.domain.model.YtmAccountState
 import com.xperience.player.domain.model.YtmMoodCategory
 import com.xperience.player.domain.model.YtmMoodCategoryDetail
@@ -54,6 +55,7 @@ import com.xperience.player.service.LyricsProviderService
 import com.xperience.player.service.MediaCatalogService
 import com.xperience.player.service.MediaNetworkClients
 import com.xperience.player.service.MornyeMusicDownloadService
+import com.xperience.player.service.OfficialMusicVideoMetadata
 import com.xperience.player.service.ResolvedMusicVideo
 import com.xperience.player.service.SearchFilter
 import com.xperience.player.service.SearchResultData
@@ -83,6 +85,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -91,6 +94,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -159,7 +163,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     val trackForRingtoneEditor: StateFlow<TrackItem?> = _trackForRingtoneEditor.asStateFlow()
 
     private var widgetDeepLinkJob: Job? = null
-    val favoritesRepository = FavoritesRepository(application)
+    val favoritesRepository = FavoritesRepository.getInstance(application)
     val likedTracks: StateFlow<List<TrackItem>> = favoritesRepository.likedTracks
     val likedTrackIds: StateFlow<Set<String>> = favoritesRepository.likedTrackIds
 
@@ -234,6 +238,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, audioPlayerService.playbackState.value)
 
+    val playbackPositionMs: StateFlow<Long> = combine(
+        audioPlayerService.playbackPositionMs,
+        castController.castState
+    ) { localPos, cast ->
+        if (cast.isConnected) cast.positionMs else localPos
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), audioPlayerService.playbackPositionMs.value)
+
+    private val trackPlayedHook: (TrackItem) -> Unit = { track ->
+        catalogService.recordTrackPlayed(track)
+    }
+    private val similarTracksFallbackHook: (List<TrackItem>, Set<String>) -> List<TrackItem> =
+        ::buildOfflineSimilarTracksFallback
+    private val widgetFavoriteToggleHook: (String, TrackItem?) -> Boolean? = { trackId, fallback ->
+        val wasLiked = favoritesRepository.likedTrackIds.value.contains(trackId)
+        toggleFavorite(trackId, fallback)
+        !wasLiked
+    }
+    private val widgetRefreshRecommendationsHook: () -> Unit = {
+        refreshHomeFeed()
+    }
+
     private val _isInitialHomeReady = MutableStateFlow(false)
     val isInitialHomeReady: StateFlow<Boolean> = _isInitialHomeReady.asStateFlow()
 
@@ -253,6 +278,41 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _ytmLoginError = MutableStateFlow<String?>(null)
     val ytmLoginError: StateFlow<String?> = _ytmLoginError.asStateFlow()
+
+    // YouTube Music Playlist Import & Local Removal Confirmation State
+    private val _isYtmPlaylistImportOpen = MutableStateFlow(false)
+    val isYtmPlaylistImportOpen: StateFlow<Boolean> = _isYtmPlaylistImportOpen.asStateFlow()
+
+    private val _isLoadingYtmLibraryPlaylists = MutableStateFlow(false)
+    val isLoadingYtmLibraryPlaylists: StateFlow<Boolean> = _isLoadingYtmLibraryPlaylists.asStateFlow()
+
+    private val _ytmLibraryPlaylists = MutableStateFlow<List<YouTubeMusicLibraryPlaylist>>(emptyList())
+    val ytmLibraryPlaylists: StateFlow<List<YouTubeMusicLibraryPlaylist>> = _ytmLibraryPlaylists.asStateFlow()
+
+    private val _selectedYtmPlaylistIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedYtmPlaylistIds: StateFlow<Set<String>> = _selectedYtmPlaylistIds.asStateFlow()
+
+    private val _isImportingYtmPlaylists = MutableStateFlow(false)
+    val isImportingYtmPlaylists: StateFlow<Boolean> = _isImportingYtmPlaylists.asStateFlow()
+
+    private val _ytmImportProgressText = MutableStateFlow<String?>(null)
+    val ytmImportProgressText: StateFlow<String?> = _ytmImportProgressText.asStateFlow()
+
+    private val _ytmImportError = MutableStateFlow<String?>(null)
+    val ytmImportError: StateFlow<String?> = _ytmImportError.asStateFlow()
+
+    private val _ytmImportStatusMessage = MutableStateFlow<String?>(null)
+    val ytmImportStatusMessage: StateFlow<String?> = _ytmImportStatusMessage.asStateFlow()
+
+    private val _playlistPendingDelete = MutableStateFlow<UserPlaylist?>(null)
+    val playlistPendingDelete: StateFlow<UserPlaylist?> = _playlistPendingDelete.asStateFlow()
+
+    private val _isRefreshingImportedPlaylist = MutableStateFlow(false)
+    val isRefreshingImportedPlaylist: StateFlow<Boolean> = _isRefreshingImportedPlaylist.asStateFlow()
+
+    private var ytmLibraryPlaylistsLoadJob: Job? = null
+    private var ytmPlaylistImportJob: Job? = null
+    private var refreshImportedPlaylistJob: Job? = null
 
     // Ordered LIFO overlay stack so Search can open over any detail screen
     // and return cleanly to the exact prior destination on Back/Close.
@@ -279,6 +339,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     val currentCanvasArtwork: StateFlow<CanvasArtworkResult?> = _currentCanvasArtwork.asStateFlow()
 
     // Audio / Video Switcher State for Now Playing & Tablet Fullscreen
+    private val _officialMusicVideoMetadata = MutableStateFlow<OfficialMusicVideoMetadata?>(null)
+    val officialMusicVideoMetadata: StateFlow<OfficialMusicVideoMetadata?> =
+        _officialMusicVideoMetadata.asStateFlow()
+
     private val _currentMusicVideo = MutableStateFlow<ResolvedMusicVideo?>(null)
     val currentMusicVideo: StateFlow<ResolvedMusicVideo?> = _currentMusicVideo.asStateFlow()
 
@@ -287,6 +351,18 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _playerMediaMode = MutableStateFlow(PlayerMediaMode.SONG)
     val playerMediaMode: StateFlow<PlayerMediaMode> = _playerMediaMode.asStateFlow()
+
+    val lyricsPlaybackPositionMs: StateFlow<Long> = combine(
+        playbackPositionMs,
+        _playerMediaMode,
+        _officialMusicVideoMetadata
+    ) { posMs, mode, meta ->
+        if (mode == PlayerMediaMode.VIDEO && meta != null) {
+            meta.mapVideoToSongPosition(posMs)
+        } else {
+            posMs
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), playbackPositionMs.value)
 
     private var musicVideoResolveJob: Job? = null
     private var lastMusicVideoTrackId: String? = null
@@ -408,12 +484,24 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _playlistToEdit = MutableStateFlow<UserPlaylist?>(null)
     val playlistToEdit: StateFlow<UserPlaylist?> = _playlistToEdit.asStateFlow()
 
-    // Add To Playlist & Track Options State
+    // Add To Playlist & Track / Collection Options State
     private val _trackForAddToPlaylist = MutableStateFlow<TrackItem?>(null)
     val trackForAddToPlaylist: StateFlow<TrackItem?> = _trackForAddToPlaylist.asStateFlow()
 
     private val _trackForOptionsMenu = MutableStateFlow<TrackItem?>(null)
     val trackForOptionsMenu: StateFlow<TrackItem?> = _trackForOptionsMenu.asStateFlow()
+
+    private val _trackOptionsRemoveAction = MutableStateFlow<Pair<String, () -> Unit>?>(null)
+    val trackOptionsRemoveAction: StateFlow<Pair<String, () -> Unit>?> = _trackOptionsRemoveAction.asStateFlow()
+
+    private val _albumForOptionsMenu = MutableStateFlow<AlbumItem?>(null)
+    val albumForOptionsMenu: StateFlow<AlbumItem?> = _albumForOptionsMenu.asStateFlow()
+
+    private val _artistForOptionsMenu = MutableStateFlow<ArtistItem?>(null)
+    val artistForOptionsMenu: StateFlow<ArtistItem?> = _artistForOptionsMenu.asStateFlow()
+
+    private val _trackForDownload = MutableStateFlow<TrackItem?>(null)
+    val trackForDownload: StateFlow<TrackItem?> = _trackForDownload.asStateFlow()
 
     // Theme Mode (SYSTEM default, DARK, LIGHT)
     private val _themeMode = MutableStateFlow(
@@ -436,6 +524,89 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isSettingsOpen = MutableStateFlow(false)
     val isSettingsOpen: StateFlow<Boolean> = _isSettingsOpen.asStateFlow()
+
+    // Streaming Quality, Song Info, Data Usage & Local Scan Filter States
+    val playbackPreferences: StateFlow<com.xperience.player.service.PlaybackPreferences> =
+        audioPlayerService.playbackSettings.preferences
+    val currentTrackPlaybackInfo: StateFlow<com.xperience.player.domain.model.TrackPlaybackInfo?> =
+        audioPlayerService.currentTrackPlaybackInfo
+    val dataUsageSummary: StateFlow<com.xperience.player.domain.model.DataUsageSummary> =
+        audioPlayerService.dataUsageTracker.summary
+    val localScanFilterConfig: StateFlow<com.xperience.player.domain.model.LocalScanFilterConfig> =
+        catalogService.localScanFilterConfig
+
+    private val _isDataUsageSheetOpen = MutableStateFlow(false)
+    val isDataUsageSheetOpen: StateFlow<Boolean> = _isDataUsageSheetOpen.asStateFlow()
+
+    private val _trackForSongInfo = MutableStateFlow<TrackItem?>(null)
+    val trackForSongInfo: StateFlow<TrackItem?> = _trackForSongInfo.asStateFlow()
+
+    private val _inspectedSongInfo = MutableStateFlow<com.xperience.player.domain.model.TrackPlaybackInfo?>(null)
+    val inspectedSongInfo: StateFlow<com.xperience.player.domain.model.TrackPlaybackInfo?> = _inspectedSongInfo.asStateFlow()
+
+    private var inspectSongInfoJob: Job? = null
+
+    fun openDataUsageSheet() {
+        _isDataUsageSheetOpen.value = true
+    }
+
+    fun closeDataUsageSheet() {
+        _isDataUsageSheetOpen.value = false
+    }
+
+    fun openSongInfo(track: TrackItem) {
+        _trackForSongInfo.value = track
+        val current = currentTrackPlaybackInfo.value
+        _inspectedSongInfo.value = if (current?.trackId == track.id) current else null
+        inspectSongInfoJob?.cancel()
+        inspectSongInfoJob = viewModelScope.launch {
+            val inspected = runCatching { audioPlayerService.inspectTrackMetadata(track) }.getOrNull()
+            if (_trackForSongInfo.value?.id == track.id && inspected != null) {
+                _inspectedSongInfo.value = inspected
+            }
+        }
+    }
+
+    fun closeSongInfo() {
+        inspectSongInfoJob?.cancel()
+        _trackForSongInfo.value = null
+        _inspectedSongInfo.value = null
+    }
+
+    fun setWifiStreamingQuality(quality: com.xperience.player.domain.model.StreamingAudioQuality) {
+        audioPlayerService.playbackSettings.setWifiQuality(quality)
+    }
+
+    fun setMobileStreamingQuality(quality: com.xperience.player.domain.model.StreamingAudioQuality) {
+        audioPlayerService.playbackSettings.setMobileDataQuality(quality)
+    }
+
+    fun setGaplessPreloadEnabled(enabled: Boolean) {
+        audioPlayerService.setGaplessPreloadEnabled(enabled)
+    }
+
+    fun setPauseAtZeroVolumeEnabled(enabled: Boolean) {
+        audioPlayerService.setPauseAtZeroVolumeEnabled(enabled)
+    }
+
+    fun updateDataUsageLimitConfig(config: com.xperience.player.domain.model.DataUsageLimitConfig) {
+        audioPlayerService.dataUsageTracker.updateLimitConfig(config)
+    }
+
+    fun resetDataUsagePeriod() {
+        audioPlayerService.dataUsageTracker.resetPeriodUsage()
+    }
+
+    fun clearDataUsageHistory() {
+        audioPlayerService.dataUsageTracker.clearAllHistory()
+    }
+
+    fun updateLocalScanFilterConfig(config: com.xperience.player.domain.model.LocalScanFilterConfig) {
+        viewModelScope.launch {
+            catalogService.updateLocalScanFilterConfig(config)
+            refreshFolders()
+        }
+    }
 
     private val _libraryFolders = MutableStateFlow<List<String>>(emptyList())
     val libraryFolders: StateFlow<List<String>> = _libraryFolders.asStateFlow()
@@ -621,25 +792,29 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         refreshFolders()
         _recentSearches.value = catalogService.getRecentSearches()
 
-        audioPlayerService.onTrackPlayed = { track ->
-            catalogService.recordTrackPlayed(track)
-        }
-        audioPlayerService.fallbackSimilarTracksProvider = ::buildOfflineSimilarTracksFallback
+        audioPlayerService.onTrackPlayed = trackPlayedHook
+        audioPlayerService.fallbackSimilarTracksProvider = similarTracksFallbackHook
 
+        // Mark home ready immediately after local/cached hydration without blocking splash on 18+ network requests
         viewModelScope.launch {
-            try {
-                catalogService.updateLikedSeeds(favoritesRepository.likedTracks.value)
+            catalogService.updateLikedSeeds(favoritesRepository.likedTracks.value)
+            val initJob = launch {
                 catalogService.initializeCatalog()
-            } finally {
-                _isInitialHomeReady.value = true
             }
+            kotlinx.coroutines.withTimeoutOrNull(350L) {
+                initJob.join()
+            }
+            _isInitialHomeReady.value = true
+            initJob.join()
+            // Defer secondary recommendations until after initial home render
             refreshLikedRecommendations()
-            loadMoodsAndGenres()
         }
 
         // Observe track changes to dynamically extract prominent album artwork colors & Aurora palette
         viewModelScope.launch {
-            playbackState.collect { state ->
+            playbackState
+                .distinctUntilChangedBy { it.currentTrack?.id }
+                .collect { state ->
                 val track = state.currentTrack
                 if (track != null) {
                     if (track.id != lastArtworkTrackId) {
@@ -691,7 +866,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
         // Observe track changes to automatically resolve synchronized lyrics and motion canvas
         viewModelScope.launch {
-            playbackState.collect { state ->
+            playbackState
+                .distinctUntilChangedBy { it.currentTrack?.id }
+                .collect { state ->
                 val track = state.currentTrack
                 if (track != null) {
                     if (track.id != lastLyricsTrackId) {
@@ -738,6 +915,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     musicVideoNeedsRefresh = false
                     musicVideoResolveJob?.cancel()
                     _isResolvingMusicVideo.value = false
+                    _officialMusicVideoMetadata.value = null
                     _currentMusicVideo.value = null
                     _playerMediaMode.value = PlayerMediaMode.SONG
                 }
@@ -763,7 +941,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 currentTrack = ps.currentTrack,
                 queue = ps.queue,
                 currentQueueIndex = ps.currentQueueIndex,
-                positionMs = ps.currentPositionMs,
+                positionMs = localPlayer.playbackPositionMs.value,
                 isPlaying = ps.isPlaying,
                 repeatMode = ps.repeatMode,
                 isShuffleEnabled = ps.isShuffleEnabled
@@ -799,14 +977,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // Live Home Screen Widget synchronization (playback + curated playlist recommendations)
-        WidgetSyncBridge.onFavoriteToggleRequested = { trackId, fallback ->
-            val wasLiked = favoritesRepository.likedTrackIds.value.contains(trackId)
-            toggleFavorite(trackId, fallback)
-            !wasLiked
-        }
-        WidgetSyncBridge.onRefreshRecommendationsRequested = {
-            refreshHomeFeed()
-        }
+        WidgetSyncBridge.onFavoriteToggleRequested = widgetFavoriteToggleHook
+        WidgetSyncBridge.onRefreshRecommendationsRequested = widgetRefreshRecommendationsHook
 
         viewModelScope.launch(Dispatchers.IO) {
             combine(
@@ -1217,10 +1389,47 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (castController.castState.value.isConnected) {
             castController.playTrack(effectiveStart, queueTracks, safeIndex)
+            catalogService.recordTrackPlayed(effectiveStart)
         } else {
             audioPlayerService.setQueue(queueTracks, safeIndex)
         }
-        catalogService.recordTrackPlayed(effectiveStart)
+    }
+
+    fun playShuffledQueue(tracks: List<TrackItem>) {
+        if (tracks.isEmpty()) return
+        val resolvedTracks = tracks.map { resolveEffectiveTrack(it) }
+        if (castController.castState.value.isConnected) {
+            val shuffled = resolvedTracks.shuffled()
+            castController.playTrack(shuffled.first(), shuffled, 0)
+        } else {
+            audioPlayerService.playShuffledQueue(resolvedTracks)
+        }
+    }
+
+    fun playNext(track: TrackItem) {
+        val effective = resolveEffectiveTrack(track)
+        if (castController.castState.value.isConnected) {
+            val state = castController.castState.value
+            val updated = state.queue.toMutableList()
+            val insertIdx = (state.currentQueueIndex + 1).coerceIn(0, updated.size)
+            updated.add(insertIdx, effective)
+            val active = state.currentTrack ?: effective
+            castController.playTrack(active, updated, state.currentQueueIndex.coerceAtLeast(0))
+        } else {
+            audioPlayerService.playNext(effective)
+        }
+    }
+
+    fun addToQueue(track: TrackItem) {
+        val effective = resolveEffectiveTrack(track)
+        if (castController.castState.value.isConnected) {
+            val state = castController.castState.value
+            val updated = state.queue + effective
+            val active = state.currentTrack ?: effective
+            castController.playTrack(active, updated, state.currentQueueIndex.coerceAtLeast(0))
+        } else {
+            audioPlayerService.addToQueue(effective)
+        }
     }
 
     /**
@@ -1231,10 +1440,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val effectiveTrack = resolveEffectiveTrack(track)
         if (castController.castState.value.isConnected) {
             castController.playTrack(effectiveTrack, listOf(effectiveTrack), 0)
+            catalogService.recordTrackPlayed(effectiveTrack)
         } else {
             audioPlayerService.playSingleTrack(effectiveTrack)
         }
-        catalogService.recordTrackPlayed(effectiveTrack)
     }
 
     fun onTrackClicked(track: TrackItem) {
@@ -1248,10 +1457,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 val updatedQueue = currentCastQueue + effectiveTrack
                 castController.playTrack(effectiveTrack, updatedQueue, updatedQueue.lastIndex)
             }
+            catalogService.recordTrackPlayed(effectiveTrack)
         } else {
             audioPlayerService.playTrack(effectiveTrack)
         }
-        catalogService.recordTrackPlayed(effectiveTrack)
     }
 
     private fun buildOfflineSimilarTracksFallback(
@@ -1451,7 +1660,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun shuffleAlbumTracks(tracks: List<TrackItem>? = null) {
         val targetTracks = tracks ?: _currentAlbumDetail.value?.tracks.orEmpty()
-        playQueue(targetTracks.shuffled(), 0)
+        playShuffledQueue(targetTracks)
     }
 
     fun onGenreSelected(genre: String) {
@@ -1465,7 +1674,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun openArtistDetail(artist: ArtistItem) {
-        openArtistByName(artist.name, artist.avatarUri)
+        openArtistByName(
+            artistName = artist.name,
+            existingAvatarUri = artist.avatarUri,
+            explicitBrowseId = artist.extractChannelBrowseId()
+        )
     }
 
     fun prefetchArtist(artistName: String) {
@@ -1474,9 +1687,14 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         youTubeMusicService.prefetchArtistProfile(normalized)
     }
 
-    fun openArtistByName(artistName: String, existingAvatarUri: String? = null) {
+    fun openArtistByName(
+        artistName: String,
+        existingAvatarUri: String? = null,
+        explicitBrowseId: String? = null
+    ) {
+        val cleanBrowseId = explicitBrowseId?.trim()?.takeIf { ArtistItem.isValidChannelBrowseId(it) }
         val primaryArtist = normalizeArtistLookupName(artistName) ?: return
-        val requestKey = primaryArtist.lowercase(Locale.ROOT)
+        val requestKey = cleanBrowseId?.let { "uc:$it" } ?: primaryArtist.lowercase(Locale.ROOT)
         if (_isArtistDetailOpen.value &&
             activeArtistRequestKey == requestKey &&
             (artistDetailJob?.isActive == true || _currentArtistDetail.value != null)
@@ -1497,7 +1715,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
         // Synchronously seed any already-cached Apple assets & YTM profile to avoid UI flicker
         val cachedApple = appleMusicCanvasService.peekArtistAssets(primaryArtist)
-        val cachedYtm = youTubeMusicService.peekArtistProfile(primaryArtist)
+        val cachedYtm = youTubeMusicService.peekArtistProfile(primaryArtist, cleanBrowseId)
 
         val seedAvatar = cachedYtm?.avatarUri?.ifBlank { null } ?: existingAvatarUri.orEmpty()
         val seedBanner = cachedYtm?.bannerImageUri?.ifBlank { null }
@@ -1567,7 +1785,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
         artistDetailJob = viewModelScope.launch {
             try {
-                catalogService.observeArtistDetail(primaryArtist, existingAvatarUri)
+                catalogService.observeArtistDetail(primaryArtist, existingAvatarUri, cleanBrowseId)
                     .catch { e -> e.printStackTrace() }
                     .collect { detail ->
                         if (generation != artistRequestGeneration) return@collect
@@ -1590,7 +1808,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                         }
 
                         if (detail.hasCustomWordmark) {
-                            MediaNetworkClients.prefetchImage(getApplication(), detail.customTitleLogoUri)
+                            MediaNetworkClients.prefetchImage(
+                                context = getApplication(),
+                                imageUri = detail.customTitleLogoUri,
+                                allowRgb565 = false
+                            )
                         }
 
                         if (!ambientPaletteLoadedFromImage && detail.keyColorRgb.isNotBlank()) {
@@ -1654,7 +1876,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun shuffleArtistTopTracks() {
         val tracks = _currentArtistDetail.value?.topTracks.orEmpty()
-        playQueue(tracks.shuffled(), 0)
+        playShuffledQueue(tracks)
     }
 
     fun playArtistMix() {
@@ -2214,7 +2436,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun shuffleLikedTracks(tracks: List<TrackItem>? = null) {
         val targetTracks = tracks ?: favoritesRepository.likedTracks.value
-        playQueue(targetTracks.shuffled(), 0)
+        playShuffledQueue(targetTracks)
     }
 
     fun playLikedTrack(track: TrackItem) {
@@ -2285,6 +2507,223 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun requestDeletePlaylist(playlist: UserPlaylist) {
+        _playlistPendingDelete.value = playlist
+    }
+
+    fun cancelDeletePlaylist() {
+        _playlistPendingDelete.value = null
+    }
+
+    /**
+     * Confirms removal of a playlist from Xperience Player.
+     * Strictly local: deletes only from PlaylistRepository and never calls any YouTube Music API.
+     */
+    fun confirmDeletePlaylist() {
+        val target = _playlistPendingDelete.value ?: return
+        _playlistPendingDelete.value = null
+        deletePlaylist(target.id)
+    }
+
+    // YouTube Music Playlist Import & Refresh Actions
+    fun openYtmPlaylistImport() {
+        _ytmImportError.value = null
+        _ytmImportProgressText.value = null
+        _isYtmPlaylistImportOpen.value = true
+        loadYtmLibraryPlaylists()
+    }
+
+    fun loadYtmLibraryPlaylists() {
+        ytmLibraryPlaylistsLoadJob?.cancel()
+        if (!catalogService.authManager.isSignedIn()) {
+            _ytmLibraryPlaylists.value = emptyList()
+            _selectedYtmPlaylistIds.value = emptySet()
+            _ytmImportError.value = "Sign in to YouTube Music to load your playlists."
+            _isLoadingYtmLibraryPlaylists.value = false
+            return
+        }
+
+        ytmLibraryPlaylistsLoadJob = viewModelScope.launch {
+            _isLoadingYtmLibraryPlaylists.value = true
+            _ytmImportError.value = null
+            try {
+                val fetched = youTubeMusicService.fetchUserLibraryPlaylists()
+                _ytmLibraryPlaylists.value = fetched
+
+                val existingExternalIds = playlistRepository.playlists.value
+                    .mapNotNull { pl ->
+                        pl.externalPlaylistId
+                            .takeIf { it.isNotBlank() }
+                            ?.let { PlaylistRepository.normalizeYouTubePlaylistId(it).lowercase() }
+                    }
+                    .toSet()
+
+                val notYetImportedIds = fetched
+                    .map { it.playlistId }
+                    .filter { id ->
+                        PlaylistRepository.normalizeYouTubePlaylistId(id).lowercase() !in existingExternalIds
+                    }
+                    .toSet()
+
+                _selectedYtmPlaylistIds.value = notYetImportedIds
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                _ytmImportError.value = e.message?.takeIf { it.isNotBlank() }
+                    ?: "Could not load your YouTube Music playlists. Please try again."
+            } finally {
+                _isLoadingYtmLibraryPlaylists.value = false
+            }
+        }
+    }
+
+    fun closeYtmPlaylistImport() {
+        ytmLibraryPlaylistsLoadJob?.cancel()
+        ytmLibraryPlaylistsLoadJob = null
+        ytmPlaylistImportJob?.cancel()
+        ytmPlaylistImportJob = null
+        _isLoadingYtmLibraryPlaylists.value = false
+        _isImportingYtmPlaylists.value = false
+        _ytmImportProgressText.value = null
+        _ytmImportError.value = null
+        _isYtmPlaylistImportOpen.value = false
+    }
+
+    fun dismissYtmImportStatusMessage() {
+        _ytmImportStatusMessage.value = null
+    }
+
+    fun toggleYtmPlaylistSelection(playlistId: String) {
+        if (_isImportingYtmPlaylists.value) return
+        _selectedYtmPlaylistIds.update { current ->
+            if (playlistId in current) current - playlistId else current + playlistId
+        }
+    }
+
+    fun selectAllYtmPlaylists() {
+        if (_isImportingYtmPlaylists.value) return
+        _selectedYtmPlaylistIds.value = _ytmLibraryPlaylists.value.map { it.playlistId }.toSet()
+    }
+
+    fun clearYtmPlaylistSelection() {
+        if (_isImportingYtmPlaylists.value) return
+        _selectedYtmPlaylistIds.value = emptySet()
+    }
+
+    fun importSelectedYtmPlaylists() {
+        if (_isImportingYtmPlaylists.value) return
+        if (!catalogService.authManager.isSignedIn()) {
+            _ytmImportError.value = "Sign in to YouTube Music to import playlists."
+            return
+        }
+        val selectedIds = _selectedYtmPlaylistIds.value
+        val toImport = _ytmLibraryPlaylists.value.filter { it.playlistId in selectedIds }
+        if (toImport.isEmpty()) return
+
+        ytmPlaylistImportJob?.cancel()
+        ytmPlaylistImportJob = viewModelScope.launch {
+            _isImportingYtmPlaylists.value = true
+            _ytmImportError.value = null
+            _ytmImportStatusMessage.value = null
+
+            val account = ytmAccountState.value
+            val accountLabel = account.accountHandle?.takeIf { it.isNotBlank() }
+                ?: account.accountName?.takeIf { it.isNotBlank() }
+                ?: ""
+
+            var importedCount = 0
+            try {
+                toImport.forEachIndexed { index, ytmPlaylist ->
+                    _ytmImportProgressText.value = "Importing ${index + 1} of ${toImport.size}…"
+                    val tracks = youTubeMusicService.fetchUserPlaylistTracks(ytmPlaylist)
+                    playlistRepository.importYouTubeMusicPlaylist(
+                        externalPlaylistId = ytmPlaylist.playlistId,
+                        externalBrowseId = ytmPlaylist.browseId,
+                        title = ytmPlaylist.title,
+                        description = ytmPlaylist.subtitle.ifBlank { ytmPlaylist.author },
+                        coverUrl = ytmPlaylist.artworkUri,
+                        tracks = tracks,
+                        accountLabel = accountLabel
+                    )
+                    importedCount++
+                }
+
+                if (importedCount > 0) {
+                    _ytmImportStatusMessage.value = if (importedCount == 1) {
+                        "Imported 1 playlist from YouTube Music"
+                    } else {
+                        "Imported $importedCount playlists from YouTube Music"
+                    }
+                    _selectedYtmPlaylistIds.value = emptySet()
+                    _isYtmPlaylistImportOpen.value = false
+                } else {
+                    _ytmImportError.value = "Could not import selected playlists. Please try again."
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                _ytmImportError.value = e.message?.takeIf { it.isNotBlank() }
+                    ?: "Failed to import playlists from YouTube Music."
+            } finally {
+                _isImportingYtmPlaylists.value = false
+                _ytmImportProgressText.value = null
+            }
+        }
+    }
+
+    fun refreshImportedPlaylist(playlist: UserPlaylist) {
+        if (!playlist.isFromYouTubeMusic || !catalogService.authManager.isSignedIn()) return
+        if (_isRefreshingImportedPlaylist.value) return
+
+        refreshImportedPlaylistJob?.cancel()
+        refreshImportedPlaylistJob = viewModelScope.launch {
+            _isRefreshingImportedPlaylist.value = true
+            try {
+                val cleanId = PlaylistRepository.normalizeYouTubePlaylistId(
+                    playlist.externalPlaylistId.ifBlank { playlist.externalBrowseId }
+                )
+                val browseId = playlist.externalBrowseId.ifBlank {
+                    if (cleanId.isNotBlank()) "VL$cleanId" else ""
+                }
+                if (browseId.isBlank()) return@launch
+
+                val libraryItem = YouTubeMusicLibraryPlaylist(
+                    playlistId = cleanId,
+                    browseId = browseId,
+                    title = playlist.title,
+                    subtitle = playlist.description,
+                    artworkUri = if (PlaylistRepository.isLocalCustomCoverPath(playlist.customCoverImagePath)) {
+                        ""
+                    } else {
+                        playlist.customCoverImagePath
+                    }
+                )
+                val tracks = youTubeMusicService.fetchUserPlaylistTracks(libraryItem)
+                val account = ytmAccountState.value
+                val accountLabel = account.accountHandle?.takeIf { it.isNotBlank() }
+                    ?: account.accountName?.takeIf { it.isNotBlank() }
+                    ?: playlist.sourceAccountLabel
+
+                playlistRepository.importYouTubeMusicPlaylist(
+                    externalPlaylistId = cleanId,
+                    externalBrowseId = browseId,
+                    title = playlist.title,
+                    description = playlist.description,
+                    coverUrl = libraryItem.artworkUri,
+                    tracks = tracks,
+                    accountLabel = accountLabel
+                )
+                _ytmImportStatusMessage.value = "Refreshed \"${playlist.title}\" from YouTube Music"
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                _isRefreshingImportedPlaylist.value = false
+            }
+        }
+    }
+
     fun openAddToPlaylist(track: TrackItem) {
         _trackForAddToPlaylist.value = track
     }
@@ -2310,7 +2749,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun shufflePlaylistTracks(playlist: UserPlaylist) {
-        playQueue(playlist.tracks.shuffled(), 0)
+        playShuffledQueue(playlist.tracks)
     }
 
     /**
@@ -2326,24 +2765,111 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun seekToLyricPosition(lyricTimestampMs: Long) {
+        val meta = _officialMusicVideoMetadata.value
+        val targetMs = if (_playerMediaMode.value == PlayerMediaMode.VIDEO && meta != null) {
+            meta.mapSongToVideoPosition(lyricTimestampMs)
+        } else {
+            lyricTimestampMs
+        }
+        val total = playbackState.value.durationMs
+        if (total > 0L) {
+            seekTo((targetMs.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+        }
+    }
+
     fun setPlayerMediaMode(mode: PlayerMediaMode) {
+        val track = playbackState.value.currentTrack ?: return
+        if (mode == _playerMediaMode.value &&
+            (mode == PlayerMediaMode.SONG || _currentMusicVideo.value != null)
+        ) {
+            return
+        }
+
         if (mode == PlayerMediaMode.VIDEO) {
-            val currentVideo = _currentMusicVideo.value ?: return
+            val currentMeta = _officialMusicVideoMetadata.value ?: return
             _playerMediaMode.value = PlayerMediaMode.VIDEO
-            val isExpiringSoon = currentVideo.expiresAtMs <= System.currentTimeMillis() + 60_000L
-            if (musicVideoNeedsRefresh || isExpiringSoon) {
-                musicVideoNeedsRefresh = false
-                retryMusicVideoStream(automatic = false)
+            _isResolvingMusicVideo.value = true
+            musicVideoResolveJob?.cancel()
+            musicVideoResolveJob = viewModelScope.launch {
+                try {
+                    val existingVideo = _currentMusicVideo.value
+                    val isExpiringSoon = existingVideo == null ||
+                        existingVideo.expiresAtMs <= System.currentTimeMillis() + 60_000L ||
+                        musicVideoNeedsRefresh
+                    val resolvedVideoDeferred = async {
+                        if (isExpiringSoon) {
+                            youTubeMusicService.resolveMusicVideoStreamForVideoId(
+                                videoId = currentMeta.omvVideoId,
+                                track = track,
+                                metadata = currentMeta,
+                                forceRefresh = musicVideoNeedsRefresh
+                            )
+                        } else {
+                            existingVideo
+                        }
+                    }
+                    val audioSwitchDeferred = async {
+                        audioPlayerService.switchTrackAudioVariant(
+                            expectedTrackId = track.id,
+                            targetVideoId = currentMeta.omvVideoId,
+                            useVideoAudio = true,
+                            positionMapper = { songPosMs -> currentMeta.mapSongToVideoPosition(songPosMs) }
+                        )
+                    }
+                    val resolvedVideo = resolvedVideoDeferred.await()
+                    val audioSwitched = audioSwitchDeferred.await()
+                    if (playbackState.value.currentTrack?.id == track.id) {
+                        if (resolvedVideo != null && audioSwitched) {
+                            musicVideoNeedsRefresh = false
+                            _currentMusicVideo.value = resolvedVideo
+                            _playerMediaMode.value = PlayerMediaMode.VIDEO
+                        } else {
+                            _playerMediaMode.value = PlayerMediaMode.SONG
+                            if (audioSwitched) {
+                                audioPlayerService.switchTrackAudioVariant(
+                                    expectedTrackId = track.id,
+                                    targetVideoId = currentMeta.atvVideoId,
+                                    useVideoAudio = false,
+                                    positionMapper = { videoPosMs -> currentMeta.mapVideoToSongPosition(videoPosMs) }
+                                )
+                            }
+                        }
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (_: Exception) {
+                    if (playbackState.value.currentTrack?.id == track.id) {
+                        _playerMediaMode.value = PlayerMediaMode.SONG
+                    }
+                } finally {
+                    if (playbackState.value.currentTrack?.id == track.id) {
+                        _isResolvingMusicVideo.value = false
+                    }
+                }
             }
             return
         }
-        _playerMediaMode.value = mode
+
+        // Switching VIDEO -> SONG: restore canonical ATV / local / FLAC audio and align position back
+        val currentMeta = _officialMusicVideoMetadata.value
+        _playerMediaMode.value = PlayerMediaMode.SONG
+        musicVideoResolveJob?.cancel()
+        _isResolvingMusicVideo.value = false
+        musicVideoResolveJob = viewModelScope.launch {
+            audioPlayerService.switchTrackAudioVariant(
+                expectedTrackId = track.id,
+                targetVideoId = currentMeta?.atvVideoId ?: track.id,
+                useVideoAudio = false,
+                positionMapper = { videoPosMs -> currentMeta?.mapVideoToSongPosition(videoPosMs) ?: videoPosMs }
+            )
+        }
     }
 
     fun playArtistOfficialVideo(videoTrack: TrackItem) {
         val rawVideoId = videoTrack.id.removePrefix("ytm_video_").removePrefix("ytm_").trim()
         val playableTrack = videoTrack.copy(
-            id = if (rawVideoId.isNotBlank()) "ytm_$rawVideoId" else videoTrack.id
+            id = if (rawVideoId.isNotBlank()) "ytm_video_$rawVideoId" else videoTrack.id
         )
         onSearchTrackClicked(playableTrack)
         openPlayer()
@@ -2351,19 +2877,31 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         lastMusicVideoTrackId = playableTrack.id
         musicVideoRetryCountForTrack = 0
         musicVideoNeedsRefresh = false
+        _playerMediaMode.value = PlayerMediaMode.VIDEO
         _isResolvingMusicVideo.value = true
         musicVideoResolveJob = viewModelScope.launch {
             try {
-                val resolved = youTubeMusicService.resolveMusicVideoStream(videoTrack)
+                val meta = youTubeMusicService.resolveOfficialMusicVideoMetadata(playableTrack)
+                val resolved = if (meta != null) {
+                    youTubeMusicService.resolveMusicVideoStreamForVideoId(
+                        videoId = meta.omvVideoId,
+                        track = playableTrack,
+                        metadata = meta
+                    )
+                } else {
+                    youTubeMusicService.resolveMusicVideoStream(videoTrack)
+                }
                 if (playbackState.value.currentTrack?.id == playableTrack.id) {
+                    _officialMusicVideoMetadata.value = resolved?.metadata ?: meta
                     _currentMusicVideo.value = resolved
-                    if (resolved != null) {
-                        _playerMediaMode.value = PlayerMediaMode.VIDEO
-                    }
+                    _playerMediaMode.value = if (resolved != null) PlayerMediaMode.VIDEO else PlayerMediaMode.SONG
                 }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (_: Exception) {
+                if (playbackState.value.currentTrack?.id == playableTrack.id) {
+                    _playerMediaMode.value = PlayerMediaMode.SONG
+                }
             } finally {
                 if (playbackState.value.currentTrack?.id == playableTrack.id) {
                     _isResolvingMusicVideo.value = false
@@ -2376,9 +2914,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val track = playbackState.value.currentTrack ?: return
         if (automatic && musicVideoRetryCountForTrack >= 1) {
             // All candidate URLs and one full cache-busted re-resolution failed: return cleanly to Song mode
-            // and refresh on the next explicit Video tap.
             musicVideoNeedsRefresh = true
-            _playerMediaMode.value = PlayerMediaMode.SONG
+            setPlayerMediaMode(PlayerMediaMode.SONG)
             return
         }
         if (automatic) {
@@ -2387,7 +2924,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             musicVideoRetryCountForTrack = 0
         }
         youTubeMusicService.invalidateMusicVideoCache(
-            videoId = _currentMusicVideo.value?.videoId,
+            videoId = _currentMusicVideo.value?.videoId ?: _officialMusicVideoMetadata.value?.omvVideoId,
             track = track
         )
         fetchMusicVideoForTrack(track = track, forceRefresh = true)
@@ -2398,35 +2935,50 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         if (!forceRefresh) {
             musicVideoRetryCountForTrack = 0
             musicVideoNeedsRefresh = false
-            if (!autoVideo) {
-                _playerMediaMode.value = PlayerMediaMode.SONG
-            }
+            _playerMediaMode.value = if (autoVideo) PlayerMediaMode.VIDEO else PlayerMediaMode.SONG
+            _officialMusicVideoMetadata.value = null
             _currentMusicVideo.value = null
         }
         musicVideoResolveJob?.cancel()
-        _isResolvingMusicVideo.value = true
+        _isResolvingMusicVideo.value = autoVideo || forceRefresh
         musicVideoResolveJob = viewModelScope.launch {
             try {
-                val resolved = youTubeMusicService.resolveMusicVideoStream(
+                val meta = youTubeMusicService.resolveOfficialMusicVideoMetadata(
                     track = track,
                     forceRefresh = forceRefresh
                 )
-                if (playbackState.value.currentTrack?.id == track.id) {
-                    _currentMusicVideo.value = resolved
-                    if (resolved != null) {
-                        musicVideoNeedsRefresh = false
-                        if (autoVideo) {
+                if (playbackState.value.currentTrack?.id != track.id) return@launch
+
+                _officialMusicVideoMetadata.value = meta
+                if (meta == null) {
+                    _currentMusicVideo.value = null
+                    _playerMediaMode.value = PlayerMediaMode.SONG
+                    return@launch
+                }
+
+                // Only resolve full video stream eagerly if the user tapped Video mode / an Official Video item.
+                if (autoVideo || forceRefresh) {
+                    val resolved = youTubeMusicService.resolveMusicVideoStreamForVideoId(
+                        videoId = meta.omvVideoId,
+                        track = track,
+                        metadata = meta,
+                        forceRefresh = forceRefresh
+                    )
+                    if (playbackState.value.currentTrack?.id == track.id) {
+                        _currentMusicVideo.value = resolved
+                        if (resolved != null) {
+                            musicVideoNeedsRefresh = false
                             _playerMediaMode.value = PlayerMediaMode.VIDEO
+                        } else if (forceRefresh) {
+                            setPlayerMediaMode(PlayerMediaMode.SONG)
                         }
-                    } else if (forceRefresh) {
-                        _playerMediaMode.value = PlayerMediaMode.SONG
                     }
                 }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (_: Exception) {
                 if (forceRefresh && playbackState.value.currentTrack?.id == track.id) {
-                    _playerMediaMode.value = PlayerMediaMode.SONG
+                    setPlayerMediaMode(PlayerMediaMode.SONG)
                 }
             } finally {
                 if (playbackState.value.currentTrack?.id == track.id) {
@@ -2436,12 +2988,139 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun openTrackOptions(track: TrackItem) {
+    fun openTrackOptions(
+        track: TrackItem,
+        removeLabel: String? = null,
+        onRemove: (() -> Unit)? = null
+    ) {
         _trackForOptionsMenu.value = track
+        _trackOptionsRemoveAction.value = if (!removeLabel.isNullOrBlank() && onRemove != null) {
+            removeLabel to onRemove
+        } else {
+            null
+        }
+        val cleanAlbum = track.album.trim()
+        val needsAlbumEnrichment = cleanAlbum.isBlank() ||
+            cleanAlbum.equals("Unknown Album", ignoreCase = true) ||
+            cleanAlbum.equals("Single", ignoreCase = true) ||
+            cleanAlbum.equals("YouTube Music", ignoreCase = true) ||
+            cleanAlbum.equals("Official Video", ignoreCase = true)
+        if (needsAlbumEnrichment && track.title.isNotBlank()) {
+            viewModelScope.launch {
+                val resolved = runCatching { youTubeMusicService.resolveAlbumForTrack(track) }.getOrNull()
+                if (resolved != null && resolved.title.isNotBlank() && _trackForOptionsMenu.value?.id == track.id) {
+                    _trackForOptionsMenu.value = _trackForOptionsMenu.value?.copy(album = resolved.title)
+                }
+            }
+        }
     }
 
     fun closeTrackOptions() {
         _trackForOptionsMenu.value = null
+        _trackOptionsRemoveAction.value = null
+    }
+
+    fun openAlbumOptions(album: AlbumItem) {
+        _albumForOptionsMenu.value = album
+    }
+
+    fun closeAlbumOptions() {
+        _albumForOptionsMenu.value = null
+    }
+
+    fun openArtistOptions(artist: ArtistItem) {
+        _artistForOptionsMenu.value = artist
+    }
+
+    fun closeArtistOptions() {
+        _artistForOptionsMenu.value = null
+    }
+
+    fun playAlbumFromMenu(album: AlbumItem, shuffle: Boolean = false) {
+        viewModelScope.launch {
+            val detail = runCatching { catalogService.getAlbumDetail(album) }.getOrNull()
+            val tracks = detail?.tracks.orEmpty()
+            if (tracks.isNotEmpty()) {
+                if (shuffle) playShuffledQueue(tracks) else playQueue(tracks, 0)
+            } else {
+                openAlbumDetail(album)
+            }
+        }
+    }
+
+    fun enqueueAlbumNext(album: AlbumItem) {
+        viewModelScope.launch {
+            val tracks = runCatching { catalogService.getAlbumDetail(album).tracks }.getOrDefault(emptyList())
+            tracks.asReversed().forEach { playNext(it) }
+        }
+    }
+
+    fun addAlbumToQueue(album: AlbumItem) {
+        viewModelScope.launch {
+            val tracks = runCatching { catalogService.getAlbumDetail(album).tracks }.getOrDefault(emptyList())
+            tracks.forEach { addToQueue(it) }
+        }
+    }
+
+    fun playArtistFromMenu(artist: ArtistItem, shuffle: Boolean = false) {
+        viewModelScope.launch {
+            val detail = runCatching {
+                catalogService.getArtistDetail(
+                    artistName = artist.name,
+                    existingAvatarUri = artist.avatarUri,
+                    explicitBrowseId = artist.extractChannelBrowseId()
+                )
+            }.getOrNull()
+            val tracks = detail?.topTracks.orEmpty()
+            if (tracks.isNotEmpty()) {
+                if (shuffle) playShuffledQueue(tracks) else playQueue(tracks, 0)
+            } else {
+                openArtistDetail(artist)
+            }
+        }
+    }
+
+    fun openAlbumFromTrack(track: TrackItem) {
+        val cleanAlbum = track.album.trim()
+        val hasExplicitAlbum = cleanAlbum.isNotBlank() &&
+            !cleanAlbum.equals("Unknown Album", ignoreCase = true) &&
+            !cleanAlbum.equals("Single", ignoreCase = true) &&
+            !cleanAlbum.equals("YouTube Music", ignoreCase = true) &&
+            !cleanAlbum.equals("Official Video", ignoreCase = true)
+        if (hasExplicitAlbum) {
+            closePlayer()
+            openAlbumDetail(
+                AlbumItem(
+                    id = "",
+                    title = cleanAlbum,
+                    artist = track.artist,
+                    coverUri = track.artworkUri.orEmpty()
+                )
+            )
+            return
+        }
+        if (track.title.isBlank()) return
+        closePlayer()
+        viewModelScope.launch {
+            val resolved = runCatching { youTubeMusicService.resolveAlbumForTrack(track) }.getOrNull()
+            val targetAlbum = resolved ?: AlbumItem(
+                id = "",
+                title = track.title,
+                artist = track.artist,
+                coverUri = track.artworkUri.orEmpty()
+            )
+            openAlbumDetail(targetAlbum)
+        }
+    }
+
+    fun openArtistFromMenu(artistName: String) {
+        if (artistName.isBlank()) return
+        closePlayer()
+        openArtistByName(artistName)
+    }
+
+    fun removeQueueItem(index: Int) {
+        audioPlayerService.removeQueueItem(index)
     }
 
     // Visualizer management
@@ -2508,6 +3187,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     // Download & Offline Management
     fun openDownloadModal(track: TrackItem) {
+        _trackForDownload.value = track
         _isDownloadModalOpen.value = true
         _downloadCandidates.value = emptyList()
         _isSearchingCandidates.value = true
@@ -2526,8 +3206,33 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun downloadTrackDirect(track: TrackItem, format: DownloadAudioFormat) {
+        _trackForDownload.value = track
+        downloadJob?.cancel()
+        _downloadProgressState.value = DownloadProgressState(
+            trackId = track.id,
+            percent = 0.05f,
+            stage = "Searching ${format.badge} source...",
+            isDownloading = true
+        )
+        runCatching {
+            android.widget.Toast.makeText(
+                getApplication(),
+                "Downloading ${track.title} (${format.badge})…",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+        viewModelScope.launch {
+            val bestCandidate = runCatching {
+                musicDownloadService.searchCandidates(track).firstOrNull()
+            }.getOrNull()
+            startDownload(track, bestCandidate, format)
+        }
+    }
+
     fun closeDownloadModal() {
         _isDownloadModalOpen.value = false
+        _trackForDownload.value = null
     }
 
     fun startDownload(track: TrackItem, candidate: TrackDownloadCandidate?, format: DownloadAudioFormat) {
@@ -2615,6 +3320,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 if (isYtmAccountValidated(syncedState)) {
                     _isYtmLoginSheetOpen.value = false
                     _ytmLoginError.value = null
+                    openYtmPlaylistImport()
                 } else {
                     catalogService.signOutYouTubeAccount()
                     _ytmLoginError.value =
@@ -2633,6 +3339,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun signOutYtm() {
+        closeYtmPlaylistImport()
+        _ytmLibraryPlaylists.value = emptyList()
+        _selectedYtmPlaylistIds.value = emptySet()
         ytmSyncJob?.cancel()
         ytmSyncJob = viewModelScope.launch {
             _isSyncingYtmAccount.value = true
@@ -2702,11 +3411,37 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         feedResolveJob?.cancel()
         when (val action = resolveTopPickClickAction(item)) {
             is HomeFeedClickAction.OpenAlbum -> openAlbumDetail(action.album)
-            is HomeFeedClickAction.OpenArtist -> openArtistByName(action.artistName, action.avatarUri)
+            is HomeFeedClickAction.OpenArtist -> openArtistByName(action.artistName, action.avatarUri, action.browseId)
             is HomeFeedClickAction.PlayTrack -> onSearchTrackClicked(action.track)
             is HomeFeedClickAction.ResolveRadio -> resolveAndPlayRadio(action.station, fallbackTrack = item.seedTrack)
             is HomeFeedClickAction.ResolvePlaylist -> resolveAndPlayPlaylist(action.playlist, fallbackTrack = item.seedTrack)
             HomeFeedClickAction.None -> Unit
+        }
+    }
+
+    fun onTopPickLongPress(item: TopPickItem) {
+        when (val action = resolveTopPickClickAction(item)) {
+            is HomeFeedClickAction.OpenAlbum -> openAlbumOptions(action.album)
+            is HomeFeedClickAction.OpenArtist -> openArtistOptions(
+                ArtistItem(
+                    id = item.browseId?.let { "ytm_art_$it" } ?: "art_${action.artistName}",
+                    name = action.artistName,
+                    avatarUri = action.avatarUri,
+                    browseId = action.browseId
+                )
+            )
+            is HomeFeedClickAction.PlayTrack -> openTrackOptions(action.track)
+            else -> {
+                item.seedTrack?.let { openTrackOptions(it) }
+            }
+        }
+    }
+
+    fun onNewReleaseLongPress(release: NewReleaseItem) {
+        when (val action = resolveNewReleaseClickAction(release)) {
+            is HomeFeedClickAction.OpenAlbum -> openAlbumOptions(action.album)
+            is HomeFeedClickAction.PlayTrack -> openTrackOptions(action.track)
+            else -> Unit
         }
     }
 
@@ -2783,8 +3518,20 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         artistAmbientJob?.cancel()
         artistVideoJob?.cancel()
         widgetDeepLinkJob?.cancel()
-        WidgetSyncBridge.onFavoriteToggleRequested = null
-        WidgetSyncBridge.onRefreshRecommendationsRequested = null
+        if (audioPlayerService.onTrackPlayed === trackPlayedHook) {
+            audioPlayerService.onTrackPlayed = null
+        }
+        if (audioPlayerService.fallbackSimilarTracksProvider === similarTracksFallbackHook) {
+            audioPlayerService.fallbackSimilarTracksProvider = null
+        }
+        if (WidgetSyncBridge.onFavoriteToggleRequested === widgetFavoriteToggleHook) {
+            WidgetSyncBridge.onFavoriteToggleRequested = null
+        }
+        if (WidgetSyncBridge.onRefreshRecommendationsRequested === widgetRefreshRecommendationsHook) {
+            WidgetSyncBridge.onRefreshRecommendationsRequested = null
+        }
+        catalogService.release()
+        musicDownloadService.release()
         audioOutputHelper.release()
     }
 }
@@ -3018,7 +3765,11 @@ internal fun normalizeArtistLookupName(rawName: String?): String? {
 
 internal sealed interface HomeFeedClickAction {
     data class OpenAlbum(val album: AlbumItem) : HomeFeedClickAction
-    data class OpenArtist(val artistName: String, val avatarUri: String?) : HomeFeedClickAction
+    data class OpenArtist(
+        val artistName: String,
+        val avatarUri: String?,
+        val browseId: String? = null
+    ) : HomeFeedClickAction
     data class PlayTrack(val track: TrackItem) : HomeFeedClickAction
     data class ResolveRadio(val station: RadioStationItem) : HomeFeedClickAction
     data class ResolvePlaylist(val playlist: RecommendedPlaylistItem) : HomeFeedClickAction
@@ -3042,7 +3793,8 @@ internal fun resolveTopPickClickAction(item: TopPickItem): HomeFeedClickAction {
             val artist = item.artistName?.trim()?.takeIf { it.isNotEmpty() }
                 ?: item.title.trim().takeIf { it.isNotEmpty() }
             if (artist != null) {
-                HomeFeedClickAction.OpenArtist(artist, item.artworkUri)
+                val ucId = item.browseId?.trim()?.takeIf { ArtistItem.isValidChannelBrowseId(it) }
+                HomeFeedClickAction.OpenArtist(artist, item.artworkUri, ucId)
             } else {
                 HomeFeedClickAction.None
             }
@@ -3094,7 +3846,7 @@ internal fun resolveTopPickClickAction(item: TopPickItem): HomeFeedClickAction {
                 browseId != null -> {
                     if (browseId.startsWith("UC")) {
                         val artist = item.artistName?.trim()?.takeIf { it.isNotEmpty() } ?: item.title
-                        HomeFeedClickAction.OpenArtist(artist, item.artworkUri)
+                        HomeFeedClickAction.OpenArtist(artist, item.artworkUri, browseId)
                     } else {
                         HomeFeedClickAction.OpenAlbum(buildAlbumFromTopPick(item))
                     }

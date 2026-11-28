@@ -12,12 +12,13 @@ android {
     minSdk = 33
     targetSdk = 36
     versionCode = 1
-    versionName = "0.1-Beta"
+    versionName = "0.2-Beta"
   }
 
   buildTypes {
     release {
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
     }
   }

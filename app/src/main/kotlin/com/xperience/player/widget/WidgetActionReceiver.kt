@@ -99,7 +99,12 @@ class WidgetActionReceiver : BroadcastReceiver() {
             }
             val after = audioPlayer.playbackState.value
             if (command == TransportCommand.PLAY_PAUSE && after.currentTrack != null) {
-                after.copy(isPlaying = !before.isPlaying)
+                val expectedPlaying = if (audioPlayer.exoPlayer.mediaItemCount == 0 && !before.isPlaying) {
+                    true
+                } else {
+                    !before.isPlaying
+                }
+                after.copy(isPlaying = expectedPlaying)
             } else {
                 after
             }

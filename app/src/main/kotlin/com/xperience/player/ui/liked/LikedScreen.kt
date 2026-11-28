@@ -21,7 +21,9 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -97,6 +99,8 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -489,7 +493,7 @@ private fun LikedHeaderHeartBadge(
     hasLikedSongs: Boolean,
     isDark: Boolean
 ) {
-    val heartScale by if (hasLikedSongs) {
+    val heartScaleState = if (hasLikedSongs) {
         val transition = rememberInfiniteTransition(label = "likedHeaderHeartPulse")
         transition.animateFloat(
             initialValue = 1f,
@@ -504,12 +508,31 @@ private fun LikedHeaderHeartBadge(
         remember { mutableFloatStateOf(1f) }
     }
 
+    val bgBrush = remember(isDark) {
+        Brush.verticalGradient(
+            colors = listOf(
+                HeartRubyTint.copy(alpha = if (isDark) 0.34f else 0.20f),
+                if (isDark) Color(0x45281420) else Color(0x88FFFFFF)
+            )
+        )
+    }
+    val borderBrush = remember(isDark) {
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = if (isDark) 0.55f else 0.85f),
+                HeartRubyTint.copy(alpha = 0.55f),
+                Color.White.copy(alpha = 0.14f)
+            )
+        )
+    }
+
     Box(
         modifier = Modifier
             .size(44.dp)
             .graphicsLayer {
-                scaleX = heartScale
-                scaleY = heartScale
+                val s = heartScaleState.value
+                scaleX = s
+                scaleY = s
             }
             .shadow(
                 elevation = 10.dp,
@@ -518,23 +541,10 @@ private fun LikedHeaderHeartBadge(
                 spotColor = HeartRubyTint.copy(alpha = 0.55f)
             )
             .clip(HeaderEmblemShape)
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        HeartRubyTint.copy(alpha = if (isDark) 0.34f else 0.20f),
-                        if (isDark) Color(0x45281420) else Color(0x88FFFFFF)
-                    )
-                )
-            )
+            .background(bgBrush)
             .border(
                 width = 1.1.dp,
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = if (isDark) 0.55f else 0.85f),
-                        HeartRubyTint.copy(alpha = 0.55f),
-                        Color.White.copy(alpha = 0.14f)
-                    )
-                ),
+                brush = borderBrush,
                 shape = HeaderEmblemShape
             ),
         contentAlignment = Alignment.Center
@@ -1542,6 +1552,7 @@ private fun LikedSongRow(
     )
 
     val isLocal = remember(track.id, track.audioUrl) { isLocalLikedTrack(track) }
+    val rowHaptic = LocalHapticFeedback.current
 
     Row(
         modifier = modifier
@@ -1564,10 +1575,14 @@ private fun LikedSongRow(
                 brush = borderBrush,
                 shape = SongRowShape
             )
-            .clickable(
+            .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = onTrackClick
+                onClick = onTrackClick,
+                onLongClick = {
+                    rowHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onMoreClick()
+                }
             )
             .padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically

@@ -48,12 +48,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,7 +91,11 @@ import com.xperience.player.ui.player.StrokedSkipPreviousIcon
 import com.xperience.player.ui.theme.GoogleSans
 import com.xperience.player.ui.utils.pressWobble
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -121,7 +127,8 @@ internal fun AmbientHudOverlay(
     onToggleVisualizer: () -> Unit,
     onToggleCanvasVideo: () -> Unit,
     onToggleRemainingTime: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    playbackPositionMsFlow: StateFlow<Long> = remember { MutableStateFlow(state.playbackState.currentPositionMs) }
 ) {
     val track = state.playbackState.currentTrack
     val hasCanvasVideo = !state.canvasArtwork?.videoUri.isNullOrBlank()
@@ -412,7 +419,8 @@ internal fun AmbientHudOverlay(
                     onCycleRepeatMode = {
                         onInteraction()
                         actions.onCycleRepeatMode()
-                    }
+                    },
+                    playbackPositionMsFlow = playbackPositionMsFlow
                 )
             }
 
@@ -426,7 +434,8 @@ internal fun AmbientHudOverlay(
                     .fillMaxWidth()
             ) {
                 AmbientBottomHairlineProgress(
-                    progressFraction = state.playbackState.progressFraction,
+                    playbackPositionMsFlow = playbackPositionMsFlow,
+                    durationMs = state.playbackState.durationMs,
                     accentColor = accentColor
                 )
             }
@@ -450,7 +459,8 @@ private fun AmbientTransportDock(
     onSkipPrevious: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSkipNext: () -> Unit,
-    onCycleRepeatMode: () -> Unit
+    onCycleRepeatMode: () -> Unit,
+    playbackPositionMsFlow: StateFlow<Long>
 ) {
     val glassConfig = LocalGlassEffectConfig.current
     val useGlass = glassConfig.isEnabledFor(GlassComponent.PLAYER) && isGlassAllowed()
@@ -489,7 +499,7 @@ private fun AmbientTransportDock(
     ) {
         // 1. Interactive Ambient Seek Bar with elapsed & tappable remaining/total time
         AmbientSeekBar(
-            currentPositionMs = playbackState.currentPositionMs,
+            playbackPositionMsFlow = playbackPositionMsFlow,
             durationMs = playbackState.durationMs,
             isPlaying = playbackState.isPlaying,
             showRemainingTime = showRemainingTime,
@@ -627,7 +637,7 @@ private fun AmbientTransportDock(
  */
 @Composable
 private fun AmbientSeekBar(
-    currentPositionMs: Long,
+    playbackPositionMsFlow: StateFlow<Long>,
     durationMs: Long,
     isPlaying: Boolean,
     showRemainingTime: Boolean,
@@ -638,7 +648,9 @@ private fun AmbientSeekBar(
     modifier: Modifier = Modifier
 ) {
     val safeDurationMs = durationMs.coerceAtLeast(0L)
-    val safePositionMs = currentPositionMs.coerceAtLeast(0L)
+    val latestSafeDurationMs by rememberUpdatedState(safeDurationMs)
+    val positionState = playbackPositionMsFlow.collectAsState()
+    val safePositionMs = positionState.value.coerceAtLeast(0L)
     val playbackFraction = if (safeDurationMs > 0L) {
         (safePositionMs.toFloat() / safeDurationMs.toFloat()).coerceIn(0f, 1f)
     } else {
@@ -649,14 +661,16 @@ private fun AmbientSeekBar(
     var dragFraction by remember { mutableFloatStateOf(playbackFraction) }
     var pendingSeekFraction by remember { mutableStateOf<Float?>(null) }
 
-    LaunchedEffect(playbackFraction, pendingSeekFraction) {
+    LaunchedEffect(pendingSeekFraction) {
         val pending = pendingSeekFraction ?: return@LaunchedEffect
-        if (abs(playbackFraction - pending) < 0.025f) {
-            pendingSeekFraction = null
-        } else {
-            delay(400L)
-            pendingSeekFraction = null
+        withTimeoutOrNull(400L) {
+            snapshotFlow {
+                val dur = latestSafeDurationMs
+                if (dur > 0L) (positionState.value.coerceAtLeast(0L).toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+                else 0f
+            }.first { frac -> abs(frac - pending) < 0.025f }
         }
+        pendingSeekFraction = null
     }
 
     val displayFraction = when {
@@ -911,25 +925,28 @@ private fun ambientXToFraction(x: Float, widthPx: Float, insetPx: Float): Float 
 
 @Composable
 private fun AmbientBottomHairlineProgress(
-    progressFraction: Float,
+    playbackPositionMsFlow: StateFlow<Long>,
+    durationMs: Long,
     accentColor: Color
 ) {
-    val animatedProgress by animateFloatAsState(
-        targetValue = progressFraction.coerceIn(0f, 1f),
-        animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
-        label = "ambientHairlineProgress"
-    )
+    val positionState = playbackPositionMsFlow.collectAsState()
+    val safeDurationMs = durationMs.coerceAtLeast(0L)
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
             .height(3.dp)
     ) {
+        val progress = if (safeDurationMs > 0L) {
+            (positionState.value.coerceAtLeast(0L).toFloat() / safeDurationMs.toFloat()).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
         drawRect(
             color = Color.White.copy(alpha = 0.12f),
             topLeft = Offset(0f, size.height - 2.dp.toPx()),
             size = androidx.compose.ui.geometry.Size(size.width, 2.dp.toPx())
         )
-        val activeWidth = size.width * animatedProgress
+        val activeWidth = size.width * progress
         if (activeWidth > 0.5f) {
             drawRect(
                 brush = Brush.horizontalGradient(

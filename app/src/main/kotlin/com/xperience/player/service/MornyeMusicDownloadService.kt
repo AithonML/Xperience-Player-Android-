@@ -17,7 +17,9 @@ import com.xperience.player.domain.model.download.TrackDownloadResult
 import com.xperience.player.domain.model.lyrics.LyricLine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -52,6 +54,7 @@ class MornyeMusicDownloadService(
     companion object {
         private const val TAG = "MornyeDownloadService"
         private const val PREFS_NAME = "xperience_download_prefs"
+        private const val PREF_FLAC_RETAG_MIGRATION_V1_DONE = "flac_retag_migration_v1_done"
         private const val TIDAL_API_BASE_URL = "https://api.tidal.com/v1"
         private const val TIDAL_PUBLIC_TOKEN = "CzET4vdadNUFQ5JU"
         private const val DEEZER_API_BASE_URL = "https://api.deezer.com"
@@ -64,8 +67,9 @@ class MornyeMusicDownloadService(
     }
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val httpClient = OkHttpClient.Builder()
+    private val httpClient = MediaNetworkClients.sharedOkHttpClient.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
@@ -114,10 +118,17 @@ class MornyeMusicDownloadService(
     }
 
     init {
-        CoroutineScope(Dispatchers.IO).launch {
+        serviceScope.launch {
             syncPreviousDownloadsToTarget()
-            verifyAndTagLocalFiles()
+            if (!prefs.getBoolean(PREF_FLAC_RETAG_MIGRATION_V1_DONE, false)) {
+                verifyAndTagLocalFiles()
+                prefs.edit().putBoolean(PREF_FLAC_RETAG_MIGRATION_V1_DONE, true).apply()
+            }
         }
+    }
+
+    fun release() {
+        serviceScope.cancel()
     }
 
     suspend fun verifyAndTagLocalFiles() = withContext(Dispatchers.IO) {
@@ -763,6 +774,7 @@ class MornyeMusicDownloadService(
                 audioUrl = finalAudioPathOrUri
             )
             mediaCatalogService.recordTrackPlayed(localTrack)
+            DataUsageTracker.getInstance(context).markTrackDownloaded(track)
 
             onProgress(1.0f, "Download complete!")
 

@@ -99,16 +99,31 @@ object WidgetSyncBridge {
             )
         }
 
-        val hasActiveWidgets = WidgetUpdater.hasAnyActiveWidgets(appContext)
         val decision: WidgetSyncThrottlePolicy.SyncDecision
         synchronized(syncLock) {
-            decision = WidgetSyncThrottlePolicy.evaluate(
+            // Fast-path: evaluate throttle policy before querying AppWidgetManager Binder IPC
+            val optimistic = WidgetSyncThrottlePolicy.evaluate(
                 previous = lastPlaybackSnapshot,
                 current = candidate,
                 lastRenderAtMs = lastPlaybackRenderElapsedMs,
                 nowMs = nowElapsedMs,
-                hasActiveWidgets = hasActiveWidgets
+                hasActiveWidgets = true
             )
+            if (optimistic == WidgetSyncThrottlePolicy.SyncDecision.SKIP) {
+                return
+            }
+            val hasActiveWidgets = WidgetUpdater.hasAnyActiveWidgets(appContext)
+            decision = if (hasActiveWidgets) {
+                optimistic
+            } else {
+                WidgetSyncThrottlePolicy.evaluate(
+                    previous = lastPlaybackSnapshot,
+                    current = candidate,
+                    lastRenderAtMs = lastPlaybackRenderElapsedMs,
+                    nowMs = nowElapsedMs,
+                    hasActiveWidgets = false
+                )
+            }
             if (decision != WidgetSyncThrottlePolicy.SyncDecision.SKIP) {
                 lastPlaybackSnapshot = candidate
                 if (decision == WidgetSyncThrottlePolicy.SyncDecision.PERSIST_AND_RENDER) {
@@ -200,10 +215,12 @@ object WidgetSyncBridge {
         if (existing.isNotEmpty()) return@withContext existing
 
         val userPlaylists = runCatching {
-            PlaylistRepository(appContext).playlists.value
+            PlaylistRepository(appContext).apply { loadPlaylistsFromDisk() }.playlists.value
         }.getOrDefault(emptyList())
         val likedTracks = runCatching {
-            FavoritesRepository(appContext).likedTracks.value
+            val repo = FavoritesRepository.getInstance(appContext)
+            if (repo.likedTracks.value.isEmpty()) repo.loadFavoritesFromDisk()
+            repo.likedTracks.value
         }.getOrDefault(emptyList())
 
         val curated = WidgetRecommendationCurator.curate(

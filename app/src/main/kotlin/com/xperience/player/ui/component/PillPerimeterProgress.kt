@@ -623,6 +623,7 @@ internal class PillPerimeterState(
 internal fun rememberPillPerimeterState(
     playbackState: PlaybackState,
     onSeek: (Float) -> Unit,
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long>? = null,
 ): PillPerimeterState {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -650,13 +651,30 @@ internal fun rememberPillPerimeterState(
     SideEffect {
         state.ambientColor = rawAmbientColor
         state.latestDurationMs = playbackState.durationMs.coerceAtLeast(0L)
-        state.latestPositionMs = playbackState.currentPositionMs.coerceAtLeast(0L)
-        state.latestPlaybackFraction = playbackState.progressFraction
+        if (playbackPositionMsFlow == null) {
+            state.latestPositionMs = playbackState.currentPositionMs.coerceAtLeast(0L)
+            state.latestPlaybackFraction = playbackState.progressFraction
+            val pending = state.pendingSeekFraction
+            if (pending != null && abs(playbackState.progressFraction - pending) < 0.025f) {
+                state.pendingSeekFraction = null
+            }
+        }
         state.latestIsLoading = playbackState.isLoading
         state.latestOnSeek = onSeek
-        val pending = state.pendingSeekFraction
-        if (pending != null && abs(playbackState.progressFraction - pending) < 0.025f) {
-            state.pendingSeekFraction = null
+    }
+
+    LaunchedEffect(playbackPositionMsFlow, state) {
+        val flow = playbackPositionMsFlow ?: return@LaunchedEffect
+        flow.collect { posMs ->
+            val safePos = posMs.coerceAtLeast(0L)
+            val dur = state.latestDurationMs
+            val fraction = if (dur > 0L) (safePos.toFloat() / dur.toFloat()).coerceIn(0f, 1f) else 0f
+            state.latestPositionMs = safePos
+            state.latestPlaybackFraction = fraction
+            val pending = state.pendingSeekFraction
+            if (pending != null && abs(fraction - pending) < 0.025f) {
+                state.pendingSeekFraction = null
+            }
         }
     }
 
