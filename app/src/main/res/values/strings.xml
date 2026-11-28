@@ -95,4 +95,112 @@
     <string name="widget_track_count_singular">1 song</string>
     <string name="widget_track_count_plural">%1$d songs</string>
     <string name="widget_time_zero" translatable="false">0:00</string>
+
+    <!-- Song Information -->
+    <string name="song_info_title">Song Information</string>
+    <string name="song_info_subtitle">View real metadata, source, and exact audio quality</string>
+    <string name="song_info_section_metadata">Track Metadata</string>
+    <string name="song_info_section_audio_quality">Audio Source &amp; Quality</string>
+    <string name="song_info_label_title">Title</string>
+    <string name="song_info_label_artist">Artist</string>
+    <string name="song_info_label_album">Album</string>
+    <string name="song_info_label_duration">Duration</string>
+    <string name="song_info_label_year">Year</string>
+    <string name="song_info_label_genre">Genre</string>
+    <string name="song_info_label_source">Actual Source</string>
+    <string name="song_info_label_provider">Provider</string>
+    <string name="song_info_label_codec">Codec</string>
+    <string name="song_info_label_bitrate">Bitrate</string>
+    <string name="song_info_label_sample_rate">Sample Rate</string>
+    <string name="song_info_label_bit_depth">Bit Depth</string>
+    <string name="song_info_label_channels">Channels</string>
+    <string name="song_info_label_size">File Size</string>
+    <string name="song_info_label_network">Connection</string>
+    <string name="song_info_label_location">Location</string>
+    <string name="song_info_label_output">Output</string>
+    <string name="song_info_label_requested_quality">Requested Tier</string>
+    <string name="song_info_flac_fallback_notice">FLAC Lossless was unavailable for this track. Playing highest quality YouTube Music fallback instead.</string>
+    <string name="song_info_not_currently_playing">Play this track to inspect live stream quality and codec telemetry.</string>
+
+    <!-- Streaming Quality & Playback Settings -->
+    <string name="settings_audio_quality_title">Streaming Quality &amp; Playback</string>
+    <string name="settings_audio_quality_subtitle">Configure online streaming bitrate separately for WiFi and Mobile Data. FLAC Lossless automatically falls back to YouTube Music if unavailable.</string>
+    <string name="settings_wifi_quality">WiFi Streaming Quality</string>
+    <string name="settings_mobile_quality">Mobile Data Streaming Quality</string>
+    <string name="settings_gapless_preload_title">Next-Song Preloading (Gapless)</string>
+    <string name="settings_gapless_preload_subtitle">Preload the next track before the current one ends to eliminate playback gaps.</string>
+    <string name="settings_pause_zero_volume_title">Pause at 0 Volume</string>
+    <string name="settings_pause_zero_volume_subtitle">Automatically pause when media volume reaches 0 and resume when raised above 0.</string>
+
+    <!-- Data Usage & Restrictions -->
+    <string name="data_usage_title">Data Usage &amp; Restrictions</string>
+    <string name="data_usage_subtitle">Track WiFi and Mobile Data consumption per song, inspect advanced breakdowns, and enforce data limits.</string>
+    <string name="data_usage_open_button">View Detailed Data Usage &amp; Limits</string>
+    <string name="data_usage_wifi">WiFi</string>
+    <string name="data_usage_mobile">Mobile Data</string>
+    <string name="data_usage_tab_all">All</string>
+    <string name="data_usage_limits_section">Data Usage Limits</string>
+    <string name="data_usage_limits_subtitle">Automatically pause online playback and notify you when the limit is reached. Local/offline tracks continue playing.</string>
+    <string name="data_usage_mobile_limit">Mobile Data Limit</string>
+    <string name="data_usage_wifi_limit">WiFi Limit</string>
+    <string name="data_usage_reset_period">Reset Period</string>
+    <string name="data_usage_clear_history">Clear History</string>
+    <string name="data_usage_download_suggestions_title">Recommended to Download</string>
+    <string name="data_usage_download_suggestions_subtitle">Frequently streamed songs you can download offline to save bandwidth.</string>
+    <string name="data_usage_download_cta">Download</string>
+    <string name="data_usage_analysis_title">Per-Song Data Analysis</string>
+    <string name="data_usage_advanced">Advanced</string>
+    <string name="data_usage_empty">No network data usage recorded yet.</string>
+    <string name="data_usage_cat_audio">Audio Stream</string>
+    <string name="data_usage_cat_artwork">Cover Art &amp; Images</string>
+    <string name="data_usage_cat_lyrics">Lyrics (.LRC / Synced)</string>
+    <string name="data_usage_cat_canvas">Apple Canvas / Video</string>
+    <string name="data_usage_chart_title">Consumption Over Time</string>
+    <string name="data_usage_granularity_day">Day</string>
+    <string name="data_usage_granularity_week">Week</string>
+    <string name="data_usage_granularity_month">Month</string>
+    <string name="data_usage_filter_all_time">All Time</string>
+    <string name="data_usage_filter_today">Today</string>
+    <string name="data_usage_filter_this_week">This Week</string>
+    <string name="data_usage_filter_this_month">This Month</string>
+    <string name="data_usage_filter_custom">Date Range…</string>
+    <string name="data_usage_sort_highest">Highest Usage</string>
+    <string name="data_usage_sort_date">Recent Date</string>
+    <string name="data_usage_sort_alpha">A–Z</string>
+    <string name="data_limit_channel_name">Data Usage Alerts</string>
+    <string name="data_limit_channel_description">Notifications when your WiFi or Mobile Data streaming limit is reached</string>
+    <string name="data_limit_notification_title">Data usage limit reached</string>
+    <string name="data_limit_notification_body">%1$s limit reached (%2$s / %3$s). Online playback was paused.</string>
+
+    <!-- Local Scan Blacklist & Whitelist -->
+    <string name="scan_filter_title">Folder Blacklist &amp; Whitelist</string>
+    <string name="scan_filter_subtitle">Blacklist excludes selected folders. Whitelist scans ONLY selected folders.</string>
+    <string name="scan_filter_global_deep_title">Include Subfolders Globally (Deep Scan)</string>
+    <string name="scan_filter_global_deep_subtitle">When disabled, folders scan shallowly (top-level files only) unless overridden per folder.</string>
+    <string name="scan_filter_add_blacklist">Add to Blacklist</string>
+    <string name="scan_filter_add_whitelist">Add to Whitelist</string>
+
+    <!-- Full-Screen Settings Hub -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_hub_subtitle">Personalize playback, library, visuals, and offline tools</string>
+    <string name="settings_back">Back</string>
+    <string name="settings_group_experience">Experience &amp; Playback</string>
+    <string name="settings_group_library_account">Library &amp; Accounts</string>
+    <string name="settings_group_system">Data &amp; System</string>
+    <string name="settings_section_appearance">Appearance &amp; Personalization</string>
+    <string name="settings_section_library">Library &amp; Local Folders</string>
+    <string name="settings_section_ytm">YouTube Music Account</string>
+    <string name="settings_section_downloads">Downloads &amp; Offline</string>
+    <string name="settings_section_lyrics_canvas">Lyrics &amp; Apple Canvas</string>
+    <string name="settings_section_playback">Playback &amp; Quality</string>
+    <string name="settings_section_data_usage">Data Usage</string>
+    <string name="settings_section_updates">Updates</string>
+    <string name="settings_lyrics_providers_title">Lyrics Providers &amp; Priority</string>
+    <string name="settings_lyrics_providers_subtitle">Reorder or toggle synchronized lyrics sources. Providers are queried from top to bottom.</string>
+    <string name="settings_lyrics_offline_title">Save Synced Lyrics Offline (.LRC)</string>
+    <string name="settings_lyrics_offline_subtitle">Embed and store synchronized .LRC files alongside downloaded songs.</string>
+    <string name="settings_canvas_title">Apple Music Motion Canvas</string>
+    <string name="settings_canvas_subtitle">Full-bleed animated album artwork in Now Playing and Ambient Mode.</string>
+    <string name="settings_canvas_offline_title">Save Motion Canvas Offline (.canvas.mp4)</string>
+    <string name="settings_canvas_offline_subtitle">Download looping canvas videos with offline tracks for zero-bandwidth playback.</string>
 </resources>

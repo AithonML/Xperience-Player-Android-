@@ -16,7 +16,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -835,6 +837,7 @@ private fun AlbumTracklistAndMore(
  * Clean track row for the album tracklist, featuring track number or animated equalizer,
  * title, artist/playcount, duration, favorite button, and options.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AlbumTrackRow(
     track: TrackItem,
@@ -850,6 +853,7 @@ private fun AlbumTrackRow(
     val appColors = LocalAppColors.current
     val accentColor = LocalAccentColor.current
     val isDark = appColors.isDark
+    val rowHaptic = LocalHapticFeedback.current
 
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -877,10 +881,14 @@ private fun AlbumTrackRow(
             }
             .clip(RoundedCornerShape(14.dp))
             .background(rowBg)
-            .clickable(
+            .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = onClick
+                onClick = onClick,
+                onLongClick = {
+                    rowHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onMoreClick()
+                }
             )
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -953,7 +961,6 @@ private fun AlbumTrackRow(
             color = appColors.textSecondary
         )
 
-        val rowHaptic = LocalHapticFeedback.current
         val favInteraction = remember { MutableInteractionSource() }
         val heartPopScale by animateFloatAsState(
             targetValue = if (isLiked) 1.12f else 1.0f,

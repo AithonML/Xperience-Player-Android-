@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -59,11 +60,56 @@ class MornyeMusicDownloadService(
         private const val TIDAL_PUBLIC_TOKEN = "CzET4vdadNUFQ5JU"
         private const val DEEZER_API_BASE_URL = "https://api.deezer.com"
         private const val GDSTUDIO_API_URL = "https://music-api.gdstudio.xyz/api.php"
+        private const val MAX_FILE_NAME_LENGTH = 120
+
+        private val TIDAL_ID_REGEX = Regex("^[0-9]+$")
+        private val TIDAL_COVER_PATH_REGEX = Regex("^[A-Za-z0-9-]+$")
+        private val CONTROL_CHARS_REGEX = Regex("[\\u0000-\\u001F\\u007F]")
+        private val INVALID_FILE_CHARS_REGEX = Regex("[\\\\/:*?\"<>|]")
 
         private val TITLE_CLEAN_REGEX = Pattern.compile(
             "\\s*[\\[\\(][^\\]\\)]*(?:official|audio|video|lyric|lyrics|visualizer|remaster|remastered|deluxe|bonus|hd|hq|4k|explicit|clean)[^\\]\\)]*[\\]\\)]|\\s+-\\s+(?:[^-]*\\b(?:remaster|remastered|mono|stereo|deluxe|bonus|version)\\b.*)$",
             Pattern.CASE_INSENSITIVE
         )
+
+        fun sanitizeFileName(name: String): String {
+            var cleaned = name
+                .replace(CONTROL_CHARS_REGEX, "")
+                .replace(INVALID_FILE_CHARS_REGEX, "_")
+            while (cleaned.contains("..")) {
+                cleaned = cleaned.replace("..", "")
+            }
+            cleaned = cleaned.trim().trimStart('.').trim()
+            if (cleaned.length > MAX_FILE_NAME_LENGTH) {
+                cleaned = cleaned.take(MAX_FILE_NAME_LENGTH).trim().trimStart('.').trim()
+            }
+            val hasContent = cleaned.any { it != '_' && it != '.' && !it.isWhitespace() }
+            return cleaned.takeIf { hasContent && it != "." && it != ".." } ?: "track"
+        }
+
+        internal fun isHttpsUrl(url: String?): Boolean {
+            if (url.isNullOrBlank()) return false
+            return url.trim().toHttpUrlOrNull()?.isHttps == true
+        }
+
+        internal fun isValidTidalId(tidalId: String?): Boolean {
+            return !tidalId.isNullOrBlank() && TIDAL_ID_REGEX.matches(tidalId)
+        }
+
+        internal fun isValidTidalCoverPath(coverPath: String?): Boolean {
+            return !coverPath.isNullOrBlank() && TIDAL_COVER_PATH_REGEX.matches(coverPath)
+        }
+
+        internal fun resolveSafeLocalFile(targetDir: File, fileName: String): File? {
+            val candidate = File(targetDir, fileName)
+            val canonicalDir = runCatching { targetDir.canonicalFile.toPath() }.getOrNull() ?: return null
+            val canonicalTarget = runCatching { candidate.canonicalFile.toPath() }.getOrNull() ?: return null
+            return if (canonicalTarget.startsWith(canonicalDir) && canonicalTarget != canonicalDir) {
+                candidate
+            } else {
+                null
+            }
+        }
     }
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -73,6 +119,7 @@ class MornyeMusicDownloadService(
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
+        .followSslRedirects(false)
         .build()
 
     private val defaultDownloadDir: File by lazy {
@@ -459,7 +506,7 @@ class MornyeMusicDownloadService(
                     val albObj = item.optJSONObject("album")
                     val tAlbum = albObj?.optString("title", "") ?: ""
                     val coverPath = albObj?.optString("cover", "") ?: ""
-                    val coverUri = if (coverPath.isNotBlank()) {
+                    val coverUri = if (isValidTidalCoverPath(coverPath)) {
                         "https://resources.tidal.com/images/${coverPath.replace("-", "/")}/1280x1280.jpg"
                     } else ""
 
@@ -644,9 +691,9 @@ class MornyeMusicDownloadService(
             // Fetch cover bytes if available for metadata embedding and sidecar
             var coverBytes: ByteArray? = null
             val coverUrl = candidate?.coverArtUri?.ifBlank { track.artworkUri } ?: track.artworkUri
-            if (!coverUrl.isNullOrBlank()) {
+            if (isHttpsUrl(coverUrl)) {
                 try {
-                    val req = Request.Builder().url(coverUrl).build()
+                    val req = Request.Builder().url(coverUrl!!).build()
                     httpClient.newCall(req).execute().use { resp ->
                         if (resp.isSuccessful) {
                             coverBytes = resp.body?.bytes()
@@ -721,10 +768,10 @@ class MornyeMusicDownloadService(
                     } catch (e: Exception) {
                         Log.d(TAG, "Cover art sidecar save warning: ${e.message}")
                     }
-                } else if (!coverUrl.isNullOrBlank()) {
+                } else if (isHttpsUrl(coverUrl)) {
                     try {
                         val tempCover = File(context.cacheDir, "temp_cover_${System.currentTimeMillis()}.jpg")
-                        if (downloadUrlToFile(coverUrl, tempCover)) {
+                        if (downloadUrlToFile(coverUrl!!, tempCover)) {
                             saveTempFileToTarget(targetLocation, tempCover, coverFileName, "image/jpeg")
                             tempCover.delete()
                         }
@@ -749,7 +796,7 @@ class MornyeMusicDownloadService(
                         if (File(canvasResult.videoUri).exists()) {
                             File(canvasResult.videoUri).copyTo(tempCanvas, overwrite = true)
                             hasCanvas = tempCanvas.length() > 16_384
-                        } else if (canvasResult.videoUri.startsWith("http")) {
+                        } else if (isHttpsUrl(canvasResult.videoUri)) {
                             hasCanvas = downloadUrlToFile(canvasResult.videoUri, tempCanvas) && tempCanvas.length() > 16_384
                         }
 
@@ -774,6 +821,7 @@ class MornyeMusicDownloadService(
                 audioUrl = finalAudioPathOrUri
             )
             mediaCatalogService.recordTrackPlayed(localTrack)
+            DataUsageTracker.getInstance(context).markTrackDownloaded(track)
 
             onProgress(1.0f, "Download complete!")
 
@@ -824,7 +872,7 @@ class MornyeMusicDownloadService(
             }
             is TargetLocation.Local -> {
                 try {
-                    val destFile = File(target.directory, fileName)
+                    val destFile = resolveSafeLocalFile(target.directory, fileName) ?: return null
                     if (destFile.exists()) destFile.delete()
                     tempFile.copyTo(destFile, overwrite = true)
                     notifyMediaScanner(destFile.absolutePath, mimeType)
@@ -896,7 +944,7 @@ class MornyeMusicDownloadService(
             }
             is TargetLocation.Local -> {
                 try {
-                    val file = File(target.directory, fileName)
+                    val file = resolveSafeLocalFile(target.directory, fileName) ?: return null
                     file.writeText(text, Charsets.UTF_8)
                     file.absolutePath
                 } catch (e: Exception) {
@@ -952,7 +1000,7 @@ class MornyeMusicDownloadService(
                     val json = httpClient.newCall(req).execute().use { it.body?.string() } ?: continue
                     val doc = JSONObject(json)
                     val streamUrl = doc.optString("url", "")
-                    if (streamUrl.isNotBlank() && streamUrl.startsWith("http")) {
+                    if (isHttpsUrl(streamUrl)) {
                         if (downloadFlacVerified(streamUrl, targetFile, onFlacProgress)) {
                             return true
                         }
@@ -965,7 +1013,7 @@ class MornyeMusicDownloadService(
 
         // 2. Try Tidal FLAC stream
         val tidalId = candidate?.tidalTrackId
-        if (!tidalId.isNullOrBlank()) {
+        if (isValidTidalId(tidalId)) {
             try {
                 val playbackUrl = "$TIDAL_API_BASE_URL/tracks/$tidalId/playbackinfopostpaywall?audioquality=LOSSLESS&playbackmode=STREAM&assetpresentation=FULL&countryCode=US"
                 val req = Request.Builder()
@@ -983,7 +1031,7 @@ class MornyeMusicDownloadService(
                         val urls = manifestJson.optJSONArray("urls")
                         if (urls != null && urls.length() > 0) {
                             val streamUrl = urls.optString(0)
-                            if (streamUrl.isNotBlank() && downloadFlacVerified(streamUrl, targetFile, onFlacProgress)) {
+                            if (isHttpsUrl(streamUrl) && downloadFlacVerified(streamUrl, targetFile, onFlacProgress)) {
                                 return true
                             }
                         }
@@ -1002,6 +1050,7 @@ class MornyeMusicDownloadService(
         targetFile: File,
         onProgress: (Float) -> Unit
     ): Boolean {
+        if (!isHttpsUrl(streamUrl)) return false
         val temp = File(targetFile.parentFile, "${targetFile.name}.tmp")
         try {
             val req = Request.Builder().url(streamUrl).build()
@@ -1059,6 +1108,7 @@ class MornyeMusicDownloadService(
         targetFile: File,
         onProgress: (Float) -> Unit = {}
     ): Boolean {
+        if (!isHttpsUrl(url)) return false
         val temp = File(targetFile.parentFile, "${targetFile.name}.tmp")
         try {
             val req = Request.Builder().url(url).build()
@@ -1115,10 +1165,6 @@ class MornyeMusicDownloadService(
         } else {
             cleanTitle
         }
-    }
-
-    private fun sanitizeFileName(name: String): String {
-        return name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
     }
 
     private fun detectVersionBadge(title: String): String {

@@ -3,6 +3,8 @@ package com.xperience.player.service
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
+import android.util.Log
+import com.xperience.player.BuildConfig
 import com.xperience.player.domain.model.AlbumDetailProfile
 import com.xperience.player.domain.model.AlbumItem
 import com.xperience.player.domain.model.ArtistDetailProfile
@@ -65,6 +67,11 @@ class MediaCatalogService(
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val catalogStateLock = Any()
     private var recFetchJob: Job? = null
+    @Volatile private var lastAutoRecRefreshMs: Long = 0L
+
+    private companion object {
+        const val AUTO_REC_REFRESH_INTERVAL_MS = 5 * 60_000L
+    }
 
     private data class PlaybackHistoryEntry(
         val track: TrackItem,
@@ -143,7 +150,7 @@ class MediaCatalogService(
             }
             recentlyPlayedPrefs.edit().putString("recently_played_json", array.toString()).apply()
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
         }
     }
 
@@ -172,7 +179,7 @@ class MediaCatalogService(
                 )
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
         }
         val (sanitized, modified) = YouTubeMusicService.sanitizePersistedTracks(
             list,
@@ -300,6 +307,59 @@ class MediaCatalogService(
 
     fun getLibraryFolders(): List<String> = scanner.getSavedLibraryFolders().toList()
 
+    private val _localScanFilterConfig = MutableStateFlow(scanner.getScanFilterConfig())
+    val localScanFilterConfig: StateFlow<com.xperience.player.domain.model.LocalScanFilterConfig> =
+        _localScanFilterConfig.asStateFlow()
+
+    suspend fun updateLocalScanFilterConfig(
+        newConfig: com.xperience.player.domain.model.LocalScanFilterConfig
+    ) = withContext(Dispatchers.IO) {
+        scanner.saveScanFilterConfig(newConfig)
+        _localScanFilterConfig.value = newConfig
+        rescanLocalLibraryWithFilter(newConfig)
+    }
+
+    private suspend fun rescanLocalLibraryWithFilter(
+        filterConfig: com.xperience.player.domain.model.LocalScanFilterConfig
+    ) {
+        _isScanning.value = true
+        try {
+            synchronized(catalogStateLock) {
+                _allTracks.removeAll { it.id.startsWith("local_") }
+            }
+            val mediaTracks = scanner.scanMediaStoreTracks(filterConfig)
+            addTracksInternal(mediaTracks)
+
+            val savedFolders = scanner.getSavedLibraryFolders()
+            val foldersToScan = when (filterConfig.filterMode) {
+                com.xperience.player.domain.model.ScanFilterMode.WHITELIST -> {
+                    filterConfig.whitelistRules.map { it.uriOrPath }.toSet()
+                }
+                com.xperience.player.domain.model.ScanFilterMode.BLACKLIST -> {
+                    savedFolders.filter { folder ->
+                        LocalScanFilterEvaluator.shouldIncludeFile(folder, filterConfig)
+                    }.toSet()
+                }
+                com.xperience.player.domain.model.ScanFilterMode.ALL -> savedFolders
+            }
+
+            for (folderUriStr in foldersToScan) {
+                if (!folderUriStr.startsWith("content://")) continue
+                runCatching {
+                    val uri = Uri.parse(folderUriStr)
+                    val deep = LocalScanFilterEvaluator.shouldTraverseSubfoldersForTree(folderUriStr, filterConfig)
+                    val tracks = scanner.scanDocumentTree(uri, deepScan = deep)
+                    if (tracks.isNotEmpty()) {
+                        addTracksInternal(tracks)
+                    }
+                }
+            }
+            updateFeedState()
+        } finally {
+            _isScanning.value = false
+        }
+    }
+
     private fun beginFeedLoadingState() {
         activeFeedLoadingCount.incrementAndGet()
         _isFeedLoading = true
@@ -363,7 +423,7 @@ class MediaCatalogService(
             val tracks = scanner.scanMediaStoreTracks()
             addTracksInternal(tracks)
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
         }
     }
 
@@ -418,15 +478,19 @@ class MediaCatalogService(
             savePlaybackHistory()
         }
 
-        // Debounce & asynchronously refresh recommendations based on the updated user listening history
-        recFetchJob?.cancel()
-        recFetchJob = serviceScope.launch {
-            delay(400L)
-            val likedSnapshot = synchronized(catalogStateLock) { _likedTracks }
-            fetchOnlineRecommendationsInternal(
-                likedTracks = likedSnapshot,
-                showLoadingState = false
-            )
+        // Throttle automatic background Home recommendation refreshes to avoid re-scraping
+        // catalog & thumbnail feeds on every single song transition.
+        if (nowMs - lastAutoRecRefreshMs >= AUTO_REC_REFRESH_INTERVAL_MS || _onlineTracks.value.isEmpty()) {
+            lastAutoRecRefreshMs = nowMs
+            recFetchJob?.cancel()
+            recFetchJob = serviceScope.launch {
+                delay(400L)
+                val likedSnapshot = synchronized(catalogStateLock) { _likedTracks }
+                fetchOnlineRecommendationsInternal(
+                    likedTracks = likedSnapshot,
+                    showLoadingState = false
+                )
+            }
         }
     }
 
@@ -729,7 +793,7 @@ class MediaCatalogService(
             }
             updateFeedState()
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
             updateFeedState()
         }
     }
@@ -805,6 +869,8 @@ class MediaCatalogService(
 
     suspend fun signOutYouTubeAccount() = withContext(Dispatchers.IO) {
         authManager.clearSession()
+        ytmService.clearAuthCaches()
+        WebViewSessionCleaner.clearAll()
         _isPersonalizedFromAccount = false
         val likedSnapshot = synchronized(catalogStateLock) { _likedTracks }
         fetchOnlineRecommendationsInternal(
@@ -1036,7 +1102,7 @@ class MediaCatalogService(
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
         } finally {
             if (shouldTrackLoading) {
                 endFeedLoadingState()
@@ -1400,7 +1466,8 @@ class MediaCatalogService(
      */
     fun observeArtistDetail(
         artistName: String,
-        existingAvatarUri: String? = null
+        existingAvatarUri: String? = null,
+        explicitBrowseId: String? = null
     ): Flow<ArtistDetailProfile> {
         val cleanName = artistName.split(",", "&", ";", "/").firstOrNull()?.trim().orEmpty().ifBlank { artistName.trim() }
         val allTracksSnapshot = synchronized(catalogStateLock) { _allTracks.toList() }
@@ -1435,12 +1502,17 @@ class MediaCatalogService(
             localMatches = localMatches,
             localAlbumsForArtist = localAlbumsForArtist,
             ytmService = ytmService,
-            appleMusicCanvasService = appleMusicCanvasService
+            appleMusicCanvasService = appleMusicCanvasService,
+            explicitBrowseId = explicitBrowseId
         )
     }
 
-    suspend fun getArtistDetail(artistName: String, existingAvatarUri: String? = null): ArtistDetailProfile = withContext(Dispatchers.IO) {
-        observeArtistDetail(artistName, existingAvatarUri).last()
+    suspend fun getArtistDetail(
+        artistName: String,
+        existingAvatarUri: String? = null,
+        explicitBrowseId: String? = null
+    ): ArtistDetailProfile = withContext(Dispatchers.IO) {
+        observeArtistDetail(artistName, existingAvatarUri, explicitBrowseId).last()
     }
 
     /**
@@ -1504,7 +1576,7 @@ class MediaCatalogService(
             val filtered = result.songs.filter { it.id !in likedIds && it.title.trim().lowercase() !in likedTitles }
             if (filtered.isNotEmpty()) filtered.take(15) else result.songs.take(15)
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("MediaCatalogService", "Catalog operation failed", e) }
             emptyList()
         }
     }
@@ -1520,11 +1592,12 @@ internal fun buildProgressiveArtistDetailFlow(
     localMatches: List<TrackItem> = emptyList(),
     localAlbumsForArtist: List<AlbumItem> = emptyList(),
     ytmService: YouTubeMusicService,
-    appleMusicCanvasService: AppleMusicCanvasService
+    appleMusicCanvasService: AppleMusicCanvasService,
+    explicitBrowseId: String? = null
 ): Flow<ArtistDetailProfile> = channelFlow {
     val cleanName = artistName.trim()
     var appleAssets = appleMusicCanvasService.peekArtistAssets(cleanName)
-    var ytmProfile = ytmService.peekArtistProfile(cleanName)
+    var ytmProfile = ytmService.peekArtistProfile(cleanName, explicitBrowseId)
     var appleDone = appleAssets != null
     var ytmDone = ytmProfile != null
 
@@ -1616,7 +1689,7 @@ internal fun buildProgressiveArtistDetailFlow(
     if (!ytmDone) {
         jobs += launch(Dispatchers.IO) {
             val fetchedYtm = try {
-                ytmService.getArtistProfile(cleanName)
+                ytmService.getArtistProfile(cleanName, explicitBrowseId)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (_: Exception) {

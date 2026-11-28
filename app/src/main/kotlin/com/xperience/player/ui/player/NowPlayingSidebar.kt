@@ -1,7 +1,9 @@
 package com.xperience.player.ui.player
 
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
+import com.xperience.player.BuildConfig
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -209,10 +211,17 @@ fun NowPlayingSidebar(
     onOpenOutputSwitcher: () -> Unit = {},
     onOpenAmbientMode: () -> Unit = {},
     onSetAsRingtone: (TrackItem) -> Unit = {},
+    onPlayNext: (TrackItem) -> Unit = {},
+    onAddToQueue: (TrackItem) -> Unit = {},
+    onGoToAlbum: (TrackItem) -> Unit = {},
+    onOpenSongInfo: (TrackItem) -> Unit = {},
+    onDirectDownloadFormat: (TrackItem, com.xperience.player.domain.model.download.DownloadAudioFormat) -> Unit = { _, _ -> },
     castState: CastPlaybackState = CastPlaybackState(),
     castRouteCount: Int = 0,
     onOpenCastPicker: () -> Unit = onOpenOutputSwitcher,
-    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long> = remember { kotlinx.coroutines.flow.MutableStateFlow(playbackState.currentPositionMs) }
+    playbackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long> = remember { kotlinx.coroutines.flow.MutableStateFlow(playbackState.currentPositionMs) },
+    lyricsPlaybackPositionMsFlow: kotlinx.coroutines.flow.StateFlow<Long> = playbackPositionMsFlow,
+    onSeekToLyricPosition: ((Long) -> Unit)? = null
 ) {
     val track = playbackState.currentTrack ?: return
     val context = LocalContext.current
@@ -265,7 +274,7 @@ fun NowPlayingSidebar(
                     Toast.makeText(context, "Lyrics imported successfully", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("NowPlayingSidebar", "Error reading LRC file", e) }
                 Toast.makeText(context, "Error reading LRC file", Toast.LENGTH_SHORT).show()
             }
         }
@@ -280,9 +289,13 @@ fun NowPlayingSidebar(
     }
 
     val onSeekToPosition: (Long) -> Unit = { posMs ->
-        val total = playbackState.durationMs
-        if (total > 0L) {
-            onSeekToFraction((posMs.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+        if (onSeekToLyricPosition != null) {
+            onSeekToLyricPosition(posMs)
+        } else {
+            val total = playbackState.durationMs
+            if (total > 0L) {
+                onSeekToFraction((posMs.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+            }
         }
     }
 
@@ -436,24 +449,26 @@ fun NowPlayingSidebar(
                         .padding(horizontal = 16.dp)
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                if (dspState.isNightcoreEnabled || dspState.isEqOrSpeedActive || sleepTimerState.isActive) {
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                // 1-Click Nightcore pill + Visual Sleep Timer badge + DSP quick button
-                NowPlayingDspQuickBar(
-                    dspState = dspState,
-                    sleepTimerState = sleepTimerState,
-                    onToggleNightcore = { dspController.toggleNightcore() },
-                    onOpenAudioEffects = { tab ->
-                        audioEffectsInitialTab = tab
-                        showAudioEffectsSheet = true
-                    },
-                    accentColor = accentColor,
-                    appColors = appColors,
-                    compact = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp)
-                )
+                    // Active-only Nightcore / Sleep Timer / DSP badges
+                    NowPlayingDspQuickBar(
+                        dspState = dspState,
+                        sleepTimerState = sleepTimerState,
+                        onToggleNightcore = { dspController.toggleNightcore() },
+                        onOpenAudioEffects = { tab ->
+                            audioEffectsInitialTab = tab
+                            showAudioEffectsSheet = true
+                        },
+                        accentColor = accentColor,
+                        appColors = appColors,
+                        compact = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp)
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
@@ -540,7 +555,7 @@ fun NowPlayingSidebar(
                             NowPlayingSidebarTab.LYRICS -> {
                                 SynchronizedLyricsView(
                                     lines = lyrics,
-                                    playbackPositionMsFlow = playbackPositionMsFlow,
+                                    playbackPositionMsFlow = lyricsPlaybackPositionMsFlow,
                                     providerName = lyricsProviderName,
                                     accentColor = accentColor,
                                     appColors = appColors,
@@ -583,44 +598,73 @@ fun NowPlayingSidebar(
         isOpen = showDetailsSheet,
         onDismissRequest = { showDetailsSheet = false },
         sheetState = detailsSheetState,
-        containerColor = if (appColors.isDark) Color(0xFF141720) else Color(0xFFFFFFFF),
-        dialogMaxWidth = 540.dp,
+        containerColor = if (appColors.isDark) Color(0xFF14161D) else Color(0xFFFFFFFF),
+        dialogMaxWidth = 500.dp,
         showDragHandle = false
     ) {
-        SongDetailsSheetContent(
+        com.xperience.player.ui.components.TrackOptionsMenuContent(
             track = track,
-            accentColor = accentColor,
-            appColors = appColors,
-            selectedVisualizerName = selectedVisualizer.name,
-            isVisualizerActive = selectedVisualizer.renderMode != VisualizerRenderMode.None,
-            outputDeviceName = outputDeviceName,
+            isLiked = isLiked,
+            onDismiss = { showDetailsSheet = false },
+            onAddToPlaylist = {
+                showDetailsSheet = false
+                onAddToPlaylist(track)
+            },
+            onDownload = {
+                showDetailsSheet = false
+                onDownloadTrack(track)
+            },
+            onToggleFavorite = { onToggleFavorite(track.id) },
+            onSetAsRingtone = {
+                showDetailsSheet = false
+                onSetAsRingtone(track)
+            },
+            onSongInfo = {
+                showDetailsSheet = false
+                onOpenSongInfo(track)
+            },
+            onPlayNext = {
+                showDetailsSheet = false
+                onPlayNext(track)
+            },
+            onAddToQueue = {
+                showDetailsSheet = false
+                onAddToQueue(track)
+            },
+            onGoToArtist = if (track.artist.isNotBlank() && onArtistClick != null) {
+                {
+                    showDetailsSheet = false
+                    onArtistClick.invoke(track.artist)
+                }
+            } else {
+                null
+            },
+            onGoToAlbum = {
+                showDetailsSheet = false
+                onGoToAlbum(track)
+            },
+            onDirectDownloadFormat = { format ->
+                showDetailsSheet = false
+                onDirectDownloadFormat(track, format)
+            },
+            isNowPlayingContext = true,
             dspState = dspState,
             sleepTimerState = sleepTimerState,
+            selectedVisualizerName = selectedVisualizer.name,
+            isVisualizerActive = selectedVisualizer.renderMode != VisualizerRenderMode.None,
             onToggleNightcore = { dspController.toggleNightcore() },
             onOpenAudioEffectsTab = { tab ->
                 showDetailsSheet = false
                 audioEffectsInitialTab = tab
                 showAudioEffectsSheet = true
             },
-            onOpenVisualizerClick = {
-                showDetailsSheet = false
-                showVisualizerSheet = true
-            },
-            onDownloadClick = {
-                showDetailsSheet = false
-                onDownloadTrack(track)
-            },
-            onAddToPlaylistClick = {
-                showDetailsSheet = false
-                onAddToPlaylist(track)
-            },
-            onOpenAmbientModeClick = {
+            onOpenAmbientMode = {
                 showDetailsSheet = false
                 onOpenAmbientMode()
             },
-            onSetAsRingtoneClick = {
+            onOpenVisualizer = {
                 showDetailsSheet = false
-                onSetAsRingtone(track)
+                showVisualizerSheet = true
             }
         )
     }

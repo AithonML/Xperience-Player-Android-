@@ -4,14 +4,23 @@ import android.content.ContentUris
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.util.Log
+import com.xperience.player.BuildConfig
 import android.os.Build
 import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
 import com.xperience.player.domain.model.AlbumItem
 import com.xperience.player.domain.model.ArtistItem
+import com.xperience.player.domain.model.FolderDepthMode
+import com.xperience.player.domain.model.FolderListType
+import com.xperience.player.domain.model.FolderScanRule
+import com.xperience.player.domain.model.LocalScanFilterConfig
+import com.xperience.player.domain.model.ScanFilterMode
 import com.xperience.player.domain.model.TrackItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 
@@ -35,10 +44,68 @@ class LocalAudioScanner(private val context: Context) {
         prefs.edit().putStringSet("saved_library_folders", current).apply()
     }
 
+    fun getScanFilterConfig(): LocalScanFilterConfig {
+        val mode = ScanFilterMode.fromId(prefs.getString(KEY_SCAN_FILTER_MODE, ScanFilterMode.BLACKLIST.id))
+        val globalDeep = prefs.getBoolean(KEY_GLOBAL_DEEP_SCAN, true)
+        val rawRules = prefs.getString(KEY_FOLDER_SCAN_RULES, null)
+        val rules = mutableListOf<FolderScanRule>()
+        if (!rawRules.isNullOrBlank()) {
+            runCatching {
+                val arr = JSONArray(rawRules)
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val uri = obj.optString("uri", "").trim()
+                    if (uri.isBlank()) continue
+                    rules.add(
+                        FolderScanRule(
+                            uriOrPath = uri,
+                            displayName = obj.optString("name", LocalScanFilterEvaluator.formatFolderDisplayName(uri)),
+                            listType = FolderListType.fromId(obj.optString("type", FolderListType.BLACKLIST.id)),
+                            depthMode = FolderDepthMode.fromId(obj.optString("depth", FolderDepthMode.INHERIT_GLOBAL.id))
+                        )
+                    )
+                }
+            }
+        }
+        return LocalScanFilterConfig(
+            filterMode = mode,
+            globalDeepScan = globalDeep,
+            rules = rules
+        )
+    }
+
+    fun saveScanFilterConfig(config: LocalScanFilterConfig) {
+        val arr = JSONArray()
+        for (rule in config.rules) {
+            arr.put(
+                JSONObject().apply {
+                    put("uri", rule.uriOrPath)
+                    put("name", rule.displayName)
+                    put("type", rule.listType.id)
+                    put("depth", rule.depthMode.id)
+                }
+            )
+        }
+        prefs.edit()
+            .putString(KEY_SCAN_FILTER_MODE, config.filterMode.id)
+            .putBoolean(KEY_GLOBAL_DEEP_SCAN, config.globalDeepScan)
+            .putString(KEY_FOLDER_SCAN_RULES, arr.toString())
+            .apply()
+    }
+
+    companion object {
+        private const val KEY_SCAN_FILTER_MODE = "local_scan_filter_mode"
+        private const val KEY_GLOBAL_DEEP_SCAN = "local_scan_global_deep"
+        private const val KEY_FOLDER_SCAN_RULES = "local_scan_folder_rules_json"
+    }
+
     /**
-     * Scans all audio files indexed in MediaStore (Music folder, Downloads, SD card, etc.)
+     * Scans all audio files indexed in MediaStore (Music folder, Downloads, SD card, etc.),
+     * applying the configured Blacklist/Whitelist and shallow/deep rules.
      */
-    suspend fun scanMediaStoreTracks(): List<TrackItem> = withContext(Dispatchers.IO) {
+    suspend fun scanMediaStoreTracks(
+        filterConfig: LocalScanFilterConfig = getScanFilterConfig()
+    ): List<TrackItem> = withContext(Dispatchers.IO) {
         val tracks = mutableListOf<TrackItem>()
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
@@ -89,6 +156,10 @@ class LocalAudioScanner(private val context: Context) {
                     val duration = cursor.getLong(durCol)
                     val albumId = cursor.getLong(albumIdCol)
                     val filePath = if (dataCol >= 0) cursor.getString(dataCol) else null
+                    val parentPath = filePath?.let { runCatching { File(it).parent }.getOrNull() }
+                    if (!LocalScanFilterEvaluator.shouldIncludeFile(parentPath, filterConfig)) {
+                        continue
+                    }
                     val displayName = if (nameCol >= 0) cursor.getString(nameCol) else null
                     val rawDateAddedSec = if (dateAddedCol >= 0) cursor.getLong(dateAddedCol) else 0L
                     val rawDateModifiedSec = if (dateModifiedCol >= 0) cursor.getLong(dateModifiedCol) else 0L
@@ -186,24 +257,30 @@ class LocalAudioScanner(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (BuildConfig.DEBUG) runCatching { Log.w("LocalAudioScanner", "Local audio scan failed", e) }
         }
 
         tracks
     }
 
     /**
-     * Scans a specific tree directory selected by the user via Storage Access Framework
+     * Scans a specific tree directory selected by the user via Storage Access Framework,
+     * respecting shallow (root folder only) vs deep (recursive subfolders) scanning.
      */
-    suspend fun scanDocumentTree(treeUri: Uri): List<TrackItem> = withContext(Dispatchers.IO) {
+    suspend fun scanDocumentTree(
+        treeUri: Uri,
+        deepScan: Boolean = LocalScanFilterEvaluator.shouldTraverseSubfoldersForTree(treeUri.toString(), getScanFilterConfig())
+    ): List<TrackItem> = withContext(Dispatchers.IO) {
         val tracks = mutableListOf<TrackItem>()
         val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext tracks
 
-        fun traverse(dir: DocumentFile) {
+        fun traverse(dir: DocumentFile, depth: Int) {
             val files = dir.listFiles()
             for (file in files) {
                 if (file.isDirectory) {
-                    traverse(file)
+                    if (deepScan) {
+                        traverse(file, depth + 1)
+                    }
                 } else {
                     val name = file.name ?: ""
                     val isAudio = name.endsWith(".mp3", ignoreCase = true) ||
@@ -226,7 +303,7 @@ class LocalAudioScanner(private val context: Context) {
             }
         }
 
-        traverse(rootDoc)
+        traverse(rootDoc, 0)
         tracks
     }
 

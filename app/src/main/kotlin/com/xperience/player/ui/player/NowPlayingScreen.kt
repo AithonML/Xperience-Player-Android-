@@ -1,7 +1,9 @@
 package com.xperience.player.ui.player
 
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
+import com.xperience.player.BuildConfig
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -201,6 +203,7 @@ fun NowPlayingScreen(
     lyricsProviders: List<LyricsProviderConfig> = emptyList(),
     canvasArtwork: CanvasArtworkResult? = null,
     musicVideo: ResolvedMusicVideo? = null,
+    isOfficialVideoAvailable: Boolean = false,
     isResolvingMusicVideo: Boolean = false,
     playerMediaMode: PlayerMediaMode = PlayerMediaMode.SONG,
     onSelectPlayerMediaMode: (PlayerMediaMode) -> Unit = {},
@@ -216,10 +219,18 @@ fun NowPlayingScreen(
     onOpenOutputSwitcher: () -> Unit = {},
     onOpenAmbientMode: () -> Unit = {},
     onSetAsRingtone: (TrackItem) -> Unit = {},
+    onPlayNext: (TrackItem) -> Unit = {},
+    onAddToQueue: (TrackItem) -> Unit = {},
+    onGoToArtist: (String) -> Unit = {},
+    onGoToAlbum: (TrackItem) -> Unit = {},
+    onOpenSongInfo: (TrackItem) -> Unit = {},
+    onDirectDownloadFormat: (TrackItem, com.xperience.player.domain.model.download.DownloadAudioFormat) -> Unit = { _, _ -> },
     castState: CastPlaybackState = CastPlaybackState(),
     castRouteCount: Int = 0,
     onOpenCastPicker: () -> Unit = onOpenOutputSwitcher,
-    playbackPositionMsFlow: StateFlow<Long> = remember { MutableStateFlow(playbackState.currentPositionMs) }
+    playbackPositionMsFlow: StateFlow<Long> = remember { MutableStateFlow(playbackState.currentPositionMs) },
+    lyricsPlaybackPositionMsFlow: StateFlow<Long> = playbackPositionMsFlow,
+    onSeekToLyricPosition: ((Long) -> Unit)? = null
 ) {
     val track = playbackState.currentTrack ?: return
     val context = LocalContext.current
@@ -249,8 +260,19 @@ fun NowPlayingScreen(
     val sleepTimerManager = remember(context) { SleepTimerManager.getInstance(context) }
     val dspState by dspController.dspState.collectAsState()
     val sleepTimerState by sleepTimerManager.timerState.collectAsState()
-    val isVideoAvailable = musicVideo != null && musicVideo.streamUrl.isNotBlank()
+    val isVideoAvailable = isOfficialVideoAvailable || (musicVideo != null && musicVideo.streamUrl.isNotBlank())
     val isVideoModeActive = isVideoAvailable && playerMediaMode == PlayerMediaMode.VIDEO
+
+    val onLyricSeekPosition: (Long) -> Unit = { posMs ->
+        if (onSeekToLyricPosition != null) {
+            onSeekToLyricPosition(posMs)
+        } else {
+            val total = playbackState.durationMs
+            if (total > 0) {
+                onSeekToFraction((posMs.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+            }
+        }
+    }
 
     // Intercept hardware/gesture Back key: collapse inline overlay first on single-pane, then close player.
     BackHandler(onBack = onClose)
@@ -270,7 +292,7 @@ fun NowPlayingScreen(
                     Toast.makeText(context, "Lyrics imported successfully", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (BuildConfig.DEBUG) runCatching { Log.w("NowPlayingScreen", "Error reading LRC file", e) }
                 Toast.makeText(context, "Error reading LRC file", Toast.LENGTH_SHORT).show()
             }
         }
@@ -625,12 +647,12 @@ fun NowPlayingScreen(
                                     onSelectTab = { activeSupportingTab = it },
                                     track = track,
                                     playbackState = playbackState,
-                                    playbackPositionMsFlow = playbackPositionMsFlow,
+                                    playbackPositionMsFlow = lyricsPlaybackPositionMsFlow,
                                     lyrics = lyrics,
                                     lyricsProviderName = lyricsProviderName,
                                     accentColor = accentColor,
                                     appColors = appColors,
-                                    onSeekToPosition = onSeekToPosition,
+                                    onSeekToPosition = onLyricSeekPosition,
                                     onOpenLyricsSettings = { showLyricsSettingsSheet = true },
                                     onImportLrcClick = onImportLrcClick,
                                     onPlayQueueIndex = onPlayQueueIndex,
@@ -693,6 +715,19 @@ fun NowPlayingScreen(
                                                 .fillMaxSize()
                                                 .padding(vertical = 12.dp)
                                         )
+                                    } else if (isVideoModeActive && isResolvingMusicVideo) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(vertical = 12.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            CircularProgressIndicator(
+                                                color = accentColor,
+                                                strokeWidth = 2.5.dp,
+                                                modifier = Modifier.size(34.dp)
+                                            )
+                                        }
                                     } else {
                                         Box(modifier = Modifier.fillMaxSize())
                                     }
@@ -700,11 +735,11 @@ fun NowPlayingScreen(
                                 NowPlayingCenterMode.LYRICS -> {
                                     SynchronizedLyricsView(
                                         lines = lyrics,
-                                        playbackPositionMsFlow = playbackPositionMsFlow,
+                                        playbackPositionMsFlow = lyricsPlaybackPositionMsFlow,
                                         providerName = lyricsProviderName,
                                         accentColor = accentColor,
                                         appColors = appColors,
-                                        onSeekToPosition = onSeekToPosition,
+                                        onSeekToPosition = onLyricSeekPosition,
                                         onOpenLyricsSettings = { showLyricsSettingsSheet = true },
                                         onImportLrcClick = onImportLrcClick,
                                         modifier = Modifier
@@ -801,44 +836,73 @@ fun NowPlayingScreen(
         isOpen = showDetailsSheet,
         onDismissRequest = { showDetailsSheet = false },
         sheetState = detailsSheetState,
-        containerColor = if (appColors.isDark) Color(0xFF141720) else Color(0xFFFFFFFF),
-        dialogMaxWidth = 540.dp,
+        containerColor = if (appColors.isDark) Color(0xFF14161D) else Color(0xFFFFFFFF),
+        dialogMaxWidth = 500.dp,
         showDragHandle = false
     ) {
-        SongDetailsSheetContent(
+        com.xperience.player.ui.components.TrackOptionsMenuContent(
             track = track,
-            accentColor = accentColor,
-            appColors = appColors,
-            selectedVisualizerName = selectedVisualizer.name,
-            isVisualizerActive = selectedVisualizer.renderMode != VisualizerRenderMode.None,
-            outputDeviceName = outputDeviceName,
+            isLiked = isLiked,
+            onDismiss = { showDetailsSheet = false },
+            onAddToPlaylist = {
+                showDetailsSheet = false
+                onAddToPlaylist(track)
+            },
+            onDownload = {
+                showDetailsSheet = false
+                onDownloadTrack(track)
+            },
+            onToggleFavorite = { onToggleFavorite(track.id) },
+            onSetAsRingtone = {
+                showDetailsSheet = false
+                onSetAsRingtone(track)
+            },
+            onSongInfo = {
+                showDetailsSheet = false
+                onOpenSongInfo(track)
+            },
+            onPlayNext = {
+                showDetailsSheet = false
+                onPlayNext(track)
+            },
+            onAddToQueue = {
+                showDetailsSheet = false
+                onAddToQueue(track)
+            },
+            onGoToArtist = if (track.artist.isNotBlank()) {
+                {
+                    showDetailsSheet = false
+                    onGoToArtist(track.artist)
+                }
+            } else {
+                null
+            },
+            onGoToAlbum = {
+                showDetailsSheet = false
+                onGoToAlbum(track)
+            },
+            onDirectDownloadFormat = { format ->
+                showDetailsSheet = false
+                onDirectDownloadFormat(track, format)
+            },
+            isNowPlayingContext = true,
             dspState = dspState,
             sleepTimerState = sleepTimerState,
+            selectedVisualizerName = selectedVisualizer.name,
+            isVisualizerActive = selectedVisualizer.renderMode != VisualizerRenderMode.None,
             onToggleNightcore = { dspController.toggleNightcore() },
             onOpenAudioEffectsTab = { tab ->
                 showDetailsSheet = false
                 audioEffectsInitialTab = tab
                 showAudioEffectsSheet = true
             },
-            onOpenVisualizerClick = {
-                showDetailsSheet = false
-                showVisualizerSheet = true
-            },
-            onDownloadClick = {
-                showDetailsSheet = false
-                onDownloadTrack(track)
-            },
-            onAddToPlaylistClick = {
-                showDetailsSheet = false
-                onAddToPlaylist(track)
-            },
-            onOpenAmbientModeClick = {
+            onOpenAmbientMode = {
                 showDetailsSheet = false
                 onOpenAmbientMode()
             },
-            onSetAsRingtoneClick = {
+            onOpenVisualizer = {
                 showDetailsSheet = false
-                onSetAsRingtone(track)
+                showVisualizerSheet = true
             }
         )
     }
@@ -1203,6 +1267,7 @@ private fun OfficialMusicVideoPlayerSurface(
                 useDiskCache = false,
                 repeatVideo = false,
                 constrainTrackQuality = false,
+                tightAudioSync = true,
                 onReady = { isVideoReady = true },
                 onError = {
                     isVideoReady = false
@@ -2021,379 +2086,6 @@ private fun BottomFloatingActionPill(
                 )
             }
         }
-    }
-}
-
-/**
- * Song menu & technical playback details sheet, including Add to Playlist, Visualizer selector,
- * Download action, and track metadata.
- */
-@Composable
-internal fun SongDetailsSheetContent(
-    track: TrackItem,
-    accentColor: Color,
-    appColors: AppThemeColors,
-    selectedVisualizerName: String,
-    isVisualizerActive: Boolean,
-    outputDeviceName: String,
-    dspState: AudioDspState = AudioDspState(),
-    sleepTimerState: SleepTimerState = SleepTimerState(),
-    onToggleNightcore: () -> Unit = {},
-    onOpenAudioEffectsTab: (AudioEffectsSectionTab) -> Unit = {},
-    onOpenVisualizerClick: () -> Unit = {},
-    onDownloadClick: () -> Unit = {},
-    onAddToPlaylistClick: () -> Unit = {},
-    onOpenAmbientModeClick: () -> Unit = {},
-    onSetAsRingtoneClick: () -> Unit = {}
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 16.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Audio Options & Effects",
-                fontFamily = GoogleSans,
-                fontWeight = FontWeight.Bold,
-                fontSize = 20.sp,
-                color = appColors.textPrimary
-            )
-
-            // Direct download pill button in top right of details sheet
-            Box(
-                modifier = Modifier
-                    .clip(ContinuousRoundedRectangle(percent = 40))
-                    .background(accentColor.copy(alpha = 0.2f))
-                    .border(1.dp, accentColor, ContinuousRoundedRectangle(percent = 40))
-                    .clickable { onDownloadClick() }
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.CloudDownload,
-                        contentDescription = "Download",
-                        tint = accentColor,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Download",
-                        fontFamily = GoogleSans,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        color = accentColor
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Audio DSP, 1-Click Nightcore Mode, Equalizer, Playback Speed, Pitch/Tone, and Sleep Timer
-        SongMenuAudioDspOptionsSection(
-            dspState = dspState,
-            sleepTimerState = sleepTimerState,
-            onToggleNightcore = onToggleNightcore,
-            onOpenEqualizer = { onOpenAudioEffectsTab(AudioEffectsSectionTab.EQUALIZER) },
-            onOpenSpeedAndPitch = { onOpenAudioEffectsTab(AudioEffectsSectionTab.SPEED_PITCH) },
-            onOpenSleepTimer = { onOpenAudioEffectsTab(AudioEffectsSectionTab.SLEEP_TIMER) },
-            accentColor = accentColor,
-            appColors = appColors
-        )
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Ambient Mode (Full-screen landscape cinema player)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .clip(ContinuousRoundedRectangle(percent = 32))
-                .background(if (appColors.isDark) Color(0xFF1E222D) else Color(0xFFEFF3F8))
-                .border(
-                    1.dp,
-                    if (appColors.isDark) Color(0xFF2C3240) else Color(0xFFDCE2EC),
-                    ContinuousRoundedRectangle(percent = 32)
-                )
-                .clickable { onOpenAmbientModeClick() }
-                .padding(horizontal = 16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Fullscreen,
-                        contentDescription = null,
-                        tint = accentColor,
-                        modifier = Modifier.size(21.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = androidx.compose.ui.res.stringResource(R.string.ambient_mode),
-                        fontFamily = GoogleSans,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.5.sp,
-                        color = appColors.textPrimary
-                    )
-                }
-
-                Text(
-                    text = androidx.compose.ui.res.stringResource(R.string.ambient_mode_subtitle),
-                    fontFamily = PlusJakartaSans,
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 11.5.sp,
-                    color = appColors.textSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 160.dp)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Set as Ringtone (Audio Trimmer & Clip Manager)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .clip(ContinuousRoundedRectangle(percent = 32))
-                .background(if (appColors.isDark) Color(0xFF1E222D) else Color(0xFFEFF3F8))
-                .border(
-                    1.dp,
-                    if (appColors.isDark) Color(0xFF2C3240) else Color(0xFFDCE2EC),
-                    ContinuousRoundedRectangle(percent = 32)
-                )
-                .clickable { onSetAsRingtoneClick() }
-                .padding(horizontal = 16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.NotificationsActive,
-                        contentDescription = null,
-                        tint = Color(0xFFFF9F0A),
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = androidx.compose.ui.res.stringResource(R.string.set_as_ringtone),
-                        fontFamily = GoogleSans,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.5.sp,
-                        color = appColors.textPrimary
-                    )
-                }
-
-                Text(
-                    text = "Trim / Cut",
-                    fontFamily = PlusJakartaSans,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 12.sp,
-                    color = appColors.textSecondary
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Add to Playlist button
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .clip(ContinuousRoundedRectangle(percent = 32))
-                .background(if (appColors.isDark) Color(0xFF1E222D) else Color(0xFFEFF3F8))
-                .border(
-                    1.dp,
-                    if (appColors.isDark) Color(0xFF2C3240) else Color(0xFFDCE2EC),
-                    ContinuousRoundedRectangle(percent = 32)
-                )
-                .clickable { onAddToPlaylistClick() }
-                .padding(horizontal = 16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
-                    contentDescription = null,
-                    tint = appColors.textPrimary,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = "Add to Playlist",
-                    fontFamily = GoogleSans,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.5.sp,
-                    color = appColors.textPrimary
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Visualizer selector button inside Song Menu
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .clip(ContinuousRoundedRectangle(percent = 32))
-                .background(
-                    if (isVisualizerActive) {
-                        accentColor.copy(alpha = if (appColors.isDark) 0.18f else 0.12f)
-                    } else if (appColors.isDark) {
-                        Color(0xFF1E222D)
-                    } else {
-                        Color(0xFFEFF3F8)
-                    }
-                )
-                .border(
-                    1.dp,
-                    if (isVisualizerActive) {
-                        accentColor.copy(alpha = 0.75f)
-                    } else if (appColors.isDark) {
-                        Color(0xFF2C3240)
-                    } else {
-                        Color(0xFFDCE2EC)
-                    },
-                    ContinuousRoundedRectangle(percent = 32)
-                )
-                .clickable { onOpenVisualizerClick() }
-                .padding(horizontal = 16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.GraphicEq,
-                        contentDescription = null,
-                        tint = if (isVisualizerActive) accentColor else appColors.textPrimary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Visualizer",
-                        fontFamily = GoogleSans,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.5.sp,
-                        color = if (isVisualizerActive) accentColor else appColors.textPrimary
-                    )
-                }
-
-                Text(
-                    text = selectedVisualizerName,
-                    fontFamily = PlusJakartaSans,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 12.sp,
-                    color = if (isVisualizerActive) accentColor else appColors.textSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 150.dp)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Download button inside the Song Menu
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .clip(ContinuousRoundedRectangle(percent = 32))
-                .background(accentColor.copy(alpha = if (appColors.isDark) 0.22f else 0.14f))
-                .border(1.2.dp, accentColor, ContinuousRoundedRectangle(percent = 32))
-                .clickable { onDownloadClick() }
-                .padding(horizontal = 16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.CloudDownload,
-                    contentDescription = null,
-                    tint = accentColor,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = "Download Song (FLAC / 320kbps)",
-                    fontFamily = GoogleSans,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.5.sp,
-                    color = accentColor
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(18.dp))
-
-        DetailRow(label = "Title", value = track.title, appColors = appColors)
-        DetailRow(label = "Artist", value = track.artist, appColors = appColors)
-        DetailRow(label = "Album", value = track.album, appColors = appColors)
-        DetailRow(label = "Duration", value = formatTrackDuration(track.durationMs), appColors = appColors)
-        DetailRow(label = "Output", value = outputDeviceName, appColors = appColors)
-        DetailRow(
-            label = "Audio Source",
-            value = if (track.id.startsWith("ytm_")) "YouTube Music Premium High-Bitrate" else "Local Lossless / Master",
-            appColors = appColors
-        )
-        DetailRow(label = "Sample Rate", value = "48.0 kHz / 24-bit Hi-Res", appColors = appColors)
-
-        Spacer(modifier = Modifier.height(24.dp))
-    }
-}
-
-@Composable
-private fun DetailRow(
-    label: String,
-    value: String,
-    appColors: AppThemeColors
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(
-            text = label,
-            fontFamily = PlusJakartaSans,
-            fontWeight = FontWeight.Medium,
-            fontSize = 13.5.sp,
-            color = appColors.textSecondary
-        )
-        Text(
-            text = value,
-            fontFamily = GoogleSans,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 13.5.sp,
-            color = appColors.textPrimary,
-            textAlign = TextAlign.End,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 220.dp)
-        )
     }
 }
 

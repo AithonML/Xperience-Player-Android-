@@ -197,6 +197,13 @@ class MainActivity : ComponentActivity() {
     }
   }
 
+  override fun onStop() {
+    super.onStop()
+    runCatching {
+      com.xperience.player.service.AudioPlayerService.getInstance(applicationContext).persistSessionNow()
+    }
+  }
+
   private fun applyTransparentEdgeToEdge(isDark: Boolean) {
     val barStyle = if (isDark) {
       SystemBarStyle.dark(AndroidColor.TRANSPARENT)

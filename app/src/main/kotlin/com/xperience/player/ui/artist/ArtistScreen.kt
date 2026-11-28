@@ -17,7 +17,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -654,6 +656,7 @@ private fun ArtistHeroHeader(
                                 AsyncImage(
                                     model = ImageRequest.Builder(appContext)
                                         .data(profile.customTitleLogoUri)
+                                        .allowRgb565(false)
                                         .crossfade(300)
                                         .build(),
                                     imageLoader = sharedImageLoader,
@@ -1023,6 +1026,7 @@ private fun ArtistSongRow(
 ) {
     val appColors = LocalAppColors.current
     val accentColor = LocalAccentColor.current
+    val songHaptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
@@ -1070,10 +1074,14 @@ private fun ArtistSongRow(
                 ),
                 shape = TopSongRowShape
             )
-            .clickable(
+            .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = onTrackClick
+                onClick = onTrackClick,
+                onLongClick = {
+                    songHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onMoreClick()
+                }
             )
             .padding(horizontal = 10.dp, vertical = 7.dp)
     ) {
@@ -1216,7 +1224,6 @@ private fun ArtistSongRow(
                 }
             }
 
-            val songHaptic = LocalHapticFeedback.current
             val favInteraction = remember { MutableInteractionSource() }
             val heartPopScale by animateFloatAsState(
                 targetValue = if (isLiked) 1.12f else 1.0f,
@@ -1411,6 +1418,7 @@ private fun ArtistAlbumCard(
 ) {
     val appColors = LocalAppColors.current
     val accentColor = LocalAccentColor.current
+    val songHaptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
@@ -1545,6 +1553,7 @@ private fun ArtistFeaturedLatestReleaseSection(
 ) {
     val appColors = LocalAppColors.current
     val accentColor = LocalAccentColor.current
+    val songHaptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
@@ -1777,6 +1786,7 @@ private fun ArtistOfficialVideosSection(
 ) {
     val appColors = LocalAppColors.current
     val accentColor = LocalAccentColor.current
+    val songHaptic = LocalHapticFeedback.current
     val safeVideos = remember(videos) {
         videos.distinctBy { it.id.ifBlank { it.title.trim().lowercase() } }
     }
@@ -1843,6 +1853,7 @@ private fun ArtistOfficialVideoCard(
 ) {
     val appColors = LocalAppColors.current
     val accentColor = LocalAccentColor.current
+    val songHaptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
@@ -2054,6 +2065,7 @@ private fun ArtistCircleCardItem(
 ) {
     val appColors = LocalAppColors.current
     val accentColor = LocalAccentColor.current
+    val songHaptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(

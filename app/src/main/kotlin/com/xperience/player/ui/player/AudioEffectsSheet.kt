@@ -1052,6 +1052,11 @@ fun NowPlayingDspQuickBar(
     appColors: AppThemeColors = LocalAppColors.current,
     compact: Boolean = false
 ) {
+    val showNightcore = dspState.isNightcoreEnabled
+    val showSleepTimer = sleepTimerState.isActive
+    val showEqOrSpeed = dspState.isEqOrSpeedActive
+    if (!showNightcore && !showSleepTimer && !showEqOrSpeed) return
+
     val summaryLabel = remember(
         dspState.isNightcoreEnabled,
         dspState.effectiveSpeed,
@@ -1060,8 +1065,8 @@ fun NowPlayingDspQuickBar(
         dspState.isAnyEffectActive
     ) {
         when {
-            !dspState.isAnyEffectActive -> "EQ & Speed"
-            abs(dspState.effectiveSpeed - 1.0f) > 0.01f || abs(dspState.effectiveSemitones) > 0.05f -> {
+            !dspState.isEqOrSpeedActive -> "EQ & Speed"
+            !dspState.isNightcoreEnabled && (abs(dspState.effectiveSpeed - 1.0f) > 0.01f || abs(dspState.effectiveSemitones) > 0.05f) -> {
                 val st = dspState.effectiveSemitones
                 val sign = if (st > 0.05f) "+" else ""
                 "%.2fx • %s%.1f st".format(dspState.effectiveSpeed, sign, st)
@@ -1075,31 +1080,37 @@ fun NowPlayingDspQuickBar(
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        NightcorePillButton(
-            isNightcoreEnabled = dspState.isNightcoreEnabled,
-            nightcoreSpeed = dspState.nightcoreSpeed,
-            onToggleNightcore = onToggleNightcore,
-            accentColor = accentColor,
-            appColors = appColors,
-            compact = compact
-        )
+        if (showNightcore) {
+            NightcorePillButton(
+                isNightcoreEnabled = dspState.isNightcoreEnabled,
+                nightcoreSpeed = dspState.nightcoreSpeed,
+                onToggleNightcore = onToggleNightcore,
+                accentColor = accentColor,
+                appColors = appColors,
+                compact = compact
+            )
+        }
 
-        SleepTimerBadge(
-            timerState = sleepTimerState,
-            onClick = { onOpenAudioEffects(AudioEffectsSectionTab.SLEEP_TIMER) },
-            accentColor = accentColor,
-            appColors = appColors,
-            compact = compact
-        )
+        if (showSleepTimer) {
+            SleepTimerBadge(
+                timerState = sleepTimerState,
+                onClick = { onOpenAudioEffects(AudioEffectsSectionTab.SLEEP_TIMER) },
+                accentColor = accentColor,
+                appColors = appColors,
+                compact = compact
+            )
+        }
 
-        DspQuickAccessPill(
-            isAnyEffectActive = dspState.isAnyEffectActive,
-            summaryLabel = summaryLabel,
-            onClick = { onOpenAudioEffects(AudioEffectsSectionTab.ALL) },
-            accentColor = accentColor,
-            appColors = appColors,
-            compact = compact
-        )
+        if (showEqOrSpeed) {
+            DspQuickAccessPill(
+                isAnyEffectActive = true,
+                summaryLabel = summaryLabel,
+                onClick = { onOpenAudioEffects(AudioEffectsSectionTab.ALL) },
+                accentColor = accentColor,
+                appColors = appColors,
+                compact = compact
+            )
+        }
     }
 }
 

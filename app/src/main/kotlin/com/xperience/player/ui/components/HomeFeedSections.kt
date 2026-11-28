@@ -8,6 +8,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -284,7 +285,8 @@ internal fun FeedSectionHeader(
                     fontFamily = GoogleSans,
                     fontSize = 10.5.sp,
                     fontWeight = FontWeight.Bold,
-                    maxLines = 1
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         }
@@ -337,16 +339,19 @@ internal fun FrostedCardBadge(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 internal fun GlossyCardShell(
     shape: Shape,
     jellyState: JellyPressState,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
     elevation: Dp = 8.dp,
     containerColor: Color = Color(0xFF1A1D28),
     content: @Composable BoxScope.() -> Unit
 ) {
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     val rimBrush = remember {
         Brush.linearGradient(
             colors = listOf(
@@ -369,10 +374,24 @@ internal fun GlossyCardShell(
             .clip(shape)
             .background(containerColor)
             .border(width = 0.9.dp, brush = rimBrush, shape = shape)
-            .clickable(
-                interactionSource = jellyState.interactionSource,
-                indication = null,
-                onClick = onClick
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(
+                        interactionSource = jellyState.interactionSource,
+                        indication = null,
+                        onClick = onClick,
+                        onLongClick = {
+                            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            onLongClick()
+                        }
+                    )
+                } else {
+                    Modifier.clickable(
+                        interactionSource = jellyState.interactionSource,
+                        indication = null,
+                        onClick = onClick
+                    )
+                }
             ),
         content = content
     )
@@ -384,7 +403,8 @@ fun MoreLikeAlbumSectionRow(
     onAlbumClick: (AlbumItem) -> Unit,
     appColors: AppThemeColors = LocalAppColors.current,
     modifier: Modifier = Modifier,
-    accentColor: Color = LocalAccentColor.current
+    accentColor: Color = LocalAccentColor.current,
+    onAlbumLongPress: ((AlbumItem) -> Unit)? = null
 ) {
     val visibleAlbums = remember(section.albums) { section.albums.take(15) }
     if (visibleAlbums.isEmpty()) return
@@ -418,6 +438,7 @@ fun MoreLikeAlbumSectionRow(
                     album = album,
                     accentColor = accentColor,
                     onClick = { onAlbumClick(album) },
+                    onLongClick = onAlbumLongPress?.let { cb -> { cb(album) } },
                     modifier = Modifier
                         .width(150.dp)
                         .height(178.dp)
@@ -433,6 +454,7 @@ private fun MoreLikeAlbumCard(
     album: AlbumItem,
     accentColor: Color,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val jellyState = rememberJellyPressState()
@@ -442,6 +464,7 @@ private fun MoreLikeAlbumCard(
         shape = AlbumMoreCardShape,
         jellyState = jellyState,
         onClick = onClick,
+        onLongClick = onLongClick,
         modifier = modifier
     ) {
         when {
@@ -894,7 +917,8 @@ fun NovedadesSection(
     appColors: AppThemeColors = LocalAppColors.current,
     modifier: Modifier = Modifier,
     accentColor: Color = LocalAccentColor.current,
-    title: String = "New Releases"
+    title: String = "New Releases",
+    onReleaseLongPress: ((NewReleaseItem) -> Unit)? = null
 ) {
     val cappedReleases = remember(releases) { releases.take(8) }
     if (cappedReleases.isEmpty()) return
@@ -926,6 +950,7 @@ fun NovedadesSection(
                     release = release,
                     accentColor = accentColor,
                     onClick = { onReleaseClick(release) },
+                    onLongClick = onReleaseLongPress?.let { cb -> { cb(release) } },
                     modifier = Modifier
                         .width(164.dp)
                         .height(198.dp)
@@ -957,6 +982,7 @@ internal fun NewReleaseCard(
     accentColor: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
     showPlayBadge: Boolean = false
 ) {
     val jellyState = rememberJellyPressState()
@@ -966,6 +992,7 @@ internal fun NewReleaseCard(
         shape = FeedCardShape,
         jellyState = jellyState,
         onClick = onClick,
+        onLongClick = onLongClick,
         modifier = modifier
     ) {
         if (artworkUri != null) {

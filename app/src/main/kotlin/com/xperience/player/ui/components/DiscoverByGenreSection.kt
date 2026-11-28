@@ -60,7 +60,8 @@ fun DiscoverByGenreSection(
     onGenreSelect: (String) -> Unit,
     onTrackClick: (TrackItem) -> Unit,
     modifier: Modifier = Modifier,
-    onPlayTrackFromList: ((List<TrackItem>, Int) -> Unit)? = null
+    onPlayTrackFromList: ((List<TrackItem>, Int) -> Unit)? = null,
+    onTrackMoreClick: ((TrackItem) -> Unit)? = null
 ) {
     val accentColor = LocalAccentColor.current
     val appColors = LocalAppColors.current
@@ -191,7 +192,8 @@ fun DiscoverByGenreSection(
                     tracks = genreTracks,
                     limit = 6,
                     onTrackClick = onTrackClick,
-                    onPlayTrackFromList = onPlayTrackFromList
+                    onPlayTrackFromList = onPlayTrackFromList,
+                    onTrackMoreClick = onTrackMoreClick
                 )
             }
         }

@@ -93,4 +93,112 @@
     <string name="widget_preview_tracks_count">24 canciones</string>
     <string name="widget_track_count_singular">1 canción</string>
     <string name="widget_track_count_plural">%1$d canciones</string>
+
+    <!-- Información de la canción -->
+    <string name="song_info_title">Información de la canción</string>
+    <string name="song_info_subtitle">Ver metadatos reales, fuente y calidad de audio exacta</string>
+    <string name="song_info_section_metadata">Metadatos de la pista</string>
+    <string name="song_info_section_audio_quality">Fuente y calidad de audio</string>
+    <string name="song_info_label_title">Título</string>
+    <string name="song_info_label_artist">Artista</string>
+    <string name="song_info_label_album">Álbum</string>
+    <string name="song_info_label_duration">Duración</string>
+    <string name="song_info_label_year">Año</string>
+    <string name="song_info_label_genre">Género</string>
+    <string name="song_info_label_source">Fuente real</string>
+    <string name="song_info_label_provider">Proveedor</string>
+    <string name="song_info_label_codec">Códec</string>
+    <string name="song_info_label_bitrate">Tasa de bits</string>
+    <string name="song_info_label_sample_rate">Frecuencia</string>
+    <string name="song_info_label_bit_depth">Profundidad</string>
+    <string name="song_info_label_channels">Canales</string>
+    <string name="song_info_label_size">Tamaño</string>
+    <string name="song_info_label_network">Conexión</string>
+    <string name="song_info_label_location">Ubicación</string>
+    <string name="song_info_label_output">Salida de audio</string>
+    <string name="song_info_label_requested_quality">Calidad configurada</string>
+    <string name="song_info_flac_fallback_notice">FLAC Lossless no estuvo disponible para esta pista. Reproduciendo respaldo de máxima calidad de YouTube Music.</string>
+    <string name="song_info_not_currently_playing">Reproduce esta pista para inspeccionar la calidad y códec en tiempo real.</string>
+
+    <!-- Calidad de streaming y reproducción -->
+    <string name="settings_audio_quality_title">Calidad de streaming y reproducción</string>
+    <string name="settings_audio_quality_subtitle">Configura la calidad de streaming por separado para WiFi y Datos móviles. FLAC Lossless usa YouTube Music como respaldo si no está disponible.</string>
+    <string name="settings_wifi_quality">Calidad en WiFi</string>
+    <string name="settings_mobile_quality">Calidad en Datos móviles</string>
+    <string name="settings_gapless_preload_title">Precarga de siguiente canción (Sin pausas)</string>
+    <string name="settings_gapless_preload_subtitle">Precarga la siguiente pista antes de que termine la actual para eliminar silencios.</string>
+    <string name="settings_pause_zero_volume_title">Pausar con volumen en 0</string>
+    <string name="settings_pause_zero_volume_subtitle">Pausa automáticamente al bajar el volumen a 0 y reanuda al subirlo.</string>
+
+    <!-- Uso de datos y restricciones -->
+    <string name="data_usage_title">Uso de datos y restricciones</string>
+    <string name="data_usage_subtitle">Consulta el consumo de WiFi y Datos móviles por canción, desglose avanzado y límites de datos.</string>
+    <string name="data_usage_open_button">Ver análisis detallado y límites de datos</string>
+    <string name="data_usage_wifi">WiFi</string>
+    <string name="data_usage_mobile">Datos móviles</string>
+    <string name="data_usage_tab_all">Todos</string>
+    <string name="data_usage_limits_section">Límites de consumo</string>
+    <string name="data_usage_limits_subtitle">Pausa la reproducción online y te notifica al alcanzar el límite. Las canciones locales siguen reproduciéndose.</string>
+    <string name="data_usage_mobile_limit">Límite en Datos móviles</string>
+    <string name="data_usage_wifi_limit">Límite en WiFi</string>
+    <string name="data_usage_reset_period">Reiniciar periodo</string>
+    <string name="data_usage_clear_history">Borrar historial</string>
+    <string name="data_usage_download_suggestions_title">Sugeridas para descargar</string>
+    <string name="data_usage_download_suggestions_subtitle">Canciones reproducidas frecuentemente que puedes descargar para ahorrar datos.</string>
+    <string name="data_usage_download_cta">Descargar</string>
+    <string name="data_usage_analysis_title">Análisis por canción</string>
+    <string name="data_usage_advanced">Avanzado</string>
+    <string name="data_usage_empty">Aún no se ha registrado consumo de red.</string>
+    <string name="data_usage_cat_audio">Audio</string>
+    <string name="data_usage_cat_artwork">Carátulas e imágenes</string>
+    <string name="data_usage_cat_lyrics">Letras (.LRC / Sincronizadas)</string>
+    <string name="data_usage_cat_canvas">Apple Canvas / Video</string>
+    <string name="data_usage_chart_title">Consumo en el tiempo</string>
+    <string name="data_usage_granularity_day">Día</string>
+    <string name="data_usage_granularity_week">Semana</string>
+    <string name="data_usage_granularity_month">Mes</string>
+    <string name="data_usage_filter_all_time">Todo</string>
+    <string name="data_usage_filter_today">Hoy</string>
+    <string name="data_usage_filter_this_week">Esta semana</string>
+    <string name="data_usage_filter_this_month">Este mes</string>
+    <string name="data_usage_filter_custom">Rango de fechas…</string>
+    <string name="data_usage_sort_highest">Mayor consumo</string>
+    <string name="data_usage_sort_date">Fecha</string>
+    <string name="data_usage_sort_alpha">Alfabético</string>
+    <string name="data_limit_channel_name">Alertas de límite de datos</string>
+    <string name="data_limit_channel_description">Notificaciones cuando alcanzas tu límite de WiFi o Datos móviles</string>
+    <string name="data_limit_notification_title">Límite de datos alcanzado</string>
+    <string name="data_limit_notification_body">Límite de %1$s alcanzado (%2$s / %3$s). Se pausó la reproducción online.</string>
+
+    <!-- Lista negra y lista blanca de escaneo local -->
+    <string name="scan_filter_title">Lista negra y lista blanca de carpetas</string>
+    <string name="scan_filter_subtitle">La lista negra excluye las carpetas seleccionadas. La lista blanca escanea SOLO las carpetas seleccionadas.</string>
+    <string name="scan_filter_global_deep_title">Incluir subcarpetas globalmente (Profundo)</string>
+    <string name="scan_filter_global_deep_subtitle">Si se desactiva, solo se escanean archivos del nivel superior salvo configuración por carpeta.</string>
+    <string name="scan_filter_add_blacklist">Añadir a Lista negra</string>
+    <string name="scan_filter_add_whitelist">Añadir a Lista blanca</string>
+
+    <!-- Configuración a pantalla completa -->
+    <string name="settings_title">Configuración</string>
+    <string name="settings_hub_subtitle">Personaliza reproducción, biblioteca, apariencia y descargas</string>
+    <string name="settings_back">Atrás</string>
+    <string name="settings_group_experience">Experiencia y reproducción</string>
+    <string name="settings_group_library_account">Biblioteca y cuentas</string>
+    <string name="settings_group_system">Datos y sistema</string>
+    <string name="settings_section_appearance">Apariencia y personalización</string>
+    <string name="settings_section_library">Biblioteca y carpetas locales</string>
+    <string name="settings_section_ytm">Cuenta de YouTube Music</string>
+    <string name="settings_section_downloads">Descargas y modo offline</string>
+    <string name="settings_section_lyrics_canvas">Letras y Apple Canvas</string>
+    <string name="settings_section_playback">Reproducción y calidad</string>
+    <string name="settings_section_data_usage">Uso de datos</string>
+    <string name="settings_section_updates">Actualizaciones</string>
+    <string name="settings_lyrics_providers_title">Proveedores de letras y prioridad</string>
+    <string name="settings_lyrics_providers_subtitle">Reordena o activa las fuentes de letras sincronizadas. Se consultan de arriba hacia abajo.</string>
+    <string name="settings_lyrics_offline_title">Guardar letras sincronizadas offline (.LRC)</string>
+    <string name="settings_lyrics_offline_subtitle">Guarda archivos .LRC sincronizados junto con tus canciones descargadas.</string>
+    <string name="settings_canvas_title">Apple Music Motion Canvas</string>
+    <string name="settings_canvas_subtitle">Portadas animadas a pantalla completa en Reproducción y Modo Ambiente.</string>
+    <string name="settings_canvas_offline_title">Guardar Motion Canvas offline (.canvas.mp4)</string>
+    <string name="settings_canvas_offline_subtitle">Descarga los videos animados junto con tus pistas offline para no gastar datos.</string>
 </resources>

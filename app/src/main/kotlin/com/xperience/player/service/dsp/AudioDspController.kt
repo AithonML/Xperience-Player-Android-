@@ -123,6 +123,15 @@ data class AudioDspState(
     val effectiveSemitones: Float
         get() = (12.0f * (ln(effectivePitch.coerceAtLeast(0.25f)) / ln(2.0f)))
 
+    val isEqOrSpeedActive: Boolean
+        get() = (!isNightcoreEnabled && (abs(effectiveSpeed - 1.0f) > 0.01f || abs(effectivePitch - 1.0f) > 0.01f)) ||
+            (isEqualizerEnabled && (
+                selectedPreset != EqPreset.FLAT ||
+                    abs(bassBoostDb) > 0.1f ||
+                    abs(trebleBoostDb) > 0.1f ||
+                    bandGainsDb.any { abs(it) > 0.1f }
+                ))
+
     /**
      * True if any DSP effect (Nightcore, custom EQ, speed, or pitch) is currently modifying audio.
      */

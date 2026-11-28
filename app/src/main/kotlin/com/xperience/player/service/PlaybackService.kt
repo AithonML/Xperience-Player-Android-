@@ -131,6 +131,7 @@ class PlaybackService : MediaSessionService(), MediaSessionService.Listener {
 
         val session = MediaSession.Builder(this, playerService.forwardingPlayer)
             .setCallback(sessionCallback)
+            .setBitmapLoader(CoilMediaSessionBitmapLoader(applicationContext))
             .setSessionActivity(sessionActivityPendingIntent)
             .build()
         mediaSession = session
@@ -208,6 +209,7 @@ class PlaybackService : MediaSessionService(), MediaSessionService.Listener {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
+        playerService.persistSessionNow()
         if (!isPlaybackOngoing()) {
             stopSelf()
         }
@@ -215,6 +217,7 @@ class PlaybackService : MediaSessionService(), MediaSessionService.Listener {
 
     override fun onDestroy() {
         Log.d(TAG, "PlaybackService onDestroy")
+        playerService.persistSessionNow()
         serviceScope.cancel()
         favoritesRepository = null
         playerService.detachMediaSession()

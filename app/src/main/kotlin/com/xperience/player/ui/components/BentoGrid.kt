@@ -2,9 +2,10 @@ package com.xperience.player.ui.components
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,8 +39,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -130,7 +133,8 @@ fun BentoGrid(
     onAlbumClick: (AlbumItem) -> Unit,
     onAddFolderClick: () -> Unit,
     modifier: Modifier = Modifier,
-    onTrackClick: ((TrackItem) -> Unit)? = null
+    onTrackClick: ((TrackItem) -> Unit)? = null,
+    onTrackLongPress: ((TrackItem) -> Unit)? = null
 ) {
     val accentColor = LocalAccentColor.current
     val appColors = LocalAppColors.current
@@ -216,7 +220,8 @@ fun BentoGrid(
                         .height(220.dp),
                     alignment = Alignment.Center,
                     blurStartFraction = 0.56f,
-                    onClick = { onAlbumClick(trackToAlbumItem(tracks[0])) }
+                    onClick = { onAlbumClick(trackToAlbumItem(tracks[0])) },
+                    onLongClick = onTrackLongPress?.let { cb -> { cb(tracks[0]) } }
                 )
             }
         } else {
@@ -316,7 +321,8 @@ fun BentoGrid(
                                         .height(topHeight),
                                     alignment = Alignment.Center,
                                     blurStartFraction = if (topHeight >= 200.dp) 0.56f else 0.48f,
-                                    onClick = { onAlbumClick(trackToAlbumItem(column.top)) }
+                                    onClick = { onAlbumClick(trackToAlbumItem(column.top)) },
+                                    onLongClick = onTrackLongPress?.let { cb -> { cb(column.top) } }
                                 )
                                 BentoCard(
                                     track = column.bottom,
@@ -325,7 +331,8 @@ fun BentoGrid(
                                         .height(bottomHeight),
                                     alignment = Alignment.Center,
                                     blurStartFraction = if (bottomHeight >= 200.dp) 0.56f else 0.48f,
-                                    onClick = { onAlbumClick(trackToAlbumItem(column.bottom)) }
+                                    onClick = { onAlbumClick(trackToAlbumItem(column.bottom)) },
+                                    onLongClick = onTrackLongPress?.let { cb -> { cb(column.bottom) } }
                                 )
                             }
                             is BentoColumn.ThreeCards -> {
@@ -339,7 +346,8 @@ fun BentoGrid(
                                         .height(topHeight),
                                     alignment = Alignment.Center,
                                     blurStartFraction = 0.42f,
-                                    onClick = { onAlbumClick(trackToAlbumItem(column.top)) }
+                                    onClick = { onAlbumClick(trackToAlbumItem(column.top)) },
+                                    onLongClick = onTrackLongPress?.let { cb -> { cb(column.top) } }
                                 )
                                 BentoCard(
                                     track = column.middle,
@@ -348,7 +356,8 @@ fun BentoGrid(
                                         .height(middleHeight),
                                     alignment = Alignment.Center,
                                     blurStartFraction = 0.42f,
-                                    onClick = { onAlbumClick(trackToAlbumItem(column.middle)) }
+                                    onClick = { onAlbumClick(trackToAlbumItem(column.middle)) },
+                                    onLongClick = onTrackLongPress?.let { cb -> { cb(column.middle) } }
                                 )
                                 BentoCard(
                                     track = column.bottom,
@@ -357,7 +366,8 @@ fun BentoGrid(
                                         .height(bottomHeight),
                                     alignment = Alignment.Center,
                                     blurStartFraction = 0.42f,
-                                    onClick = { onAlbumClick(trackToAlbumItem(column.bottom)) }
+                                    onClick = { onAlbumClick(trackToAlbumItem(column.bottom)) },
+                                    onLongClick = onTrackLongPress?.let { cb -> { cb(column.bottom) } }
                                 )
                             }
                             is BentoColumn.SingleCard -> {
@@ -368,7 +378,8 @@ fun BentoGrid(
                                         .height(412.dp),
                                     alignment = Alignment.Center,
                                     blurStartFraction = 0.72f,
-                                    onClick = { onAlbumClick(trackToAlbumItem(column.track)) }
+                                    onClick = { onAlbumClick(trackToAlbumItem(column.track)) },
+                                    onLongClick = onTrackLongPress?.let { cb -> { cb(column.track) } }
                                 )
                             }
                         }
@@ -379,15 +390,18 @@ fun BentoGrid(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun BentoCard(
     track: TrackItem,
     modifier: Modifier = Modifier,
     alignment: Alignment = Alignment.Center,
     blurStartFraction: Float = 0.48f,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val fallbackAccent = LocalAccentColor.current
 
     // Check memory cache synchronously first, then fetch asynchronously if not yet cached
@@ -455,10 +469,16 @@ private fun BentoCard(
             )
             .clip(cornerShape)
             .background(Color(0xFF1E212A))
-            .clickable(
+            .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = onClick
+                onClick = onClick,
+                onLongClick = onLongClick?.let { cb ->
+                    {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        cb()
+                    }
+                }
             ),
         contentAlignment = Alignment.Center
     ) {

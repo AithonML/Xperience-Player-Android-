@@ -3,9 +3,11 @@ package com.xperience.player.ui.components
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
@@ -40,7 +43,9 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -63,7 +68,8 @@ fun RecommendedSongsSection(
     likedTrackIds: Set<String> = emptySet(),
     onToggleFavorite: ((TrackItem) -> Unit)? = null,
     modifier: Modifier = Modifier,
-    onPlayTrackFromList: ((List<TrackItem>, Int) -> Unit)? = null
+    onPlayTrackFromList: ((List<TrackItem>, Int) -> Unit)? = null,
+    onTrackMoreClick: ((TrackItem) -> Unit)? = null
 ) {
     if (tracks.isEmpty()) return
     val appColors = LocalAppColors.current
@@ -89,7 +95,8 @@ fun RecommendedSongsSection(
             likedTrackIds = likedTrackIds,
             onTrackClick = onTrackClick,
             onToggleFavorite = onToggleFavorite,
-            onPlayTrackFromList = onPlayTrackFromList
+            onPlayTrackFromList = onPlayTrackFromList,
+            onTrackMoreClick = onTrackMoreClick
         )
     }
 }
@@ -106,6 +113,7 @@ internal fun AdaptiveTrackRowsGrid(
     onTrackClick: (TrackItem) -> Unit,
     onToggleFavorite: ((TrackItem) -> Unit)? = null,
     onPlayTrackFromList: ((List<TrackItem>, Int) -> Unit)? = null,
+    onTrackMoreClick: ((TrackItem) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val windowSizeClass = LocalAppWindowSizeClass.current
@@ -132,7 +140,8 @@ internal fun AdaptiveTrackRowsGrid(
                             onTrackClick(track)
                         }
                     },
-                    onToggleFavorite = { onToggleFavorite?.invoke(track) }
+                    onToggleFavorite = { onToggleFavorite?.invoke(track) },
+                    onMoreClick = onTrackMoreClick?.let { cb -> { cb(track) } }
                 )
             }
         } else {
@@ -154,6 +163,7 @@ internal fun AdaptiveTrackRowsGrid(
                                 }
                             },
                             onToggleFavorite = { onToggleFavorite?.invoke(track) },
+                            onMoreClick = onTrackMoreClick?.let { cb -> { cb(track) } },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -166,15 +176,18 @@ internal fun AdaptiveTrackRowsGrid(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RecommendedSongRow(
     track: TrackItem,
     isLiked: Boolean = false,
     onClick: () -> Unit,
     onToggleFavorite: (() -> Unit)? = null,
+    onMoreClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val interactionSource = remember { MutableInteractionSource() }
+    val haptic = LocalHapticFeedback.current
     val isPressed by interactionSource.collectIsPressedAsState()
     val accentColor = LocalAccentColor.current
     val appColors = LocalAppColors.current
@@ -221,10 +234,16 @@ fun RecommendedSongRow(
                 shape = shape
             )
             .background(if (appColors.isDark) Color(0xFF16181F).copy(alpha = 0.72f) else Color(0xFFFFFFFF))
-            .clickable(
+            .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = onClick
+                onClick = onClick,
+                onLongClick = onMoreClick?.let { cb ->
+                    {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        cb()
+                    }
+                }
             )
             .padding(horizontal = 10.dp, vertical = 7.dp)
     ) {
@@ -358,7 +377,7 @@ fun RecommendedSongRow(
                 Spacer(modifier = Modifier.width(4.dp))
             }
 
-            // Play Circle Button
+            // Play Circle Button or 3-dot Menu
             Box(
                 modifier = Modifier
                     .size(32.dp)
@@ -384,6 +403,27 @@ fun RecommendedSongRow(
                     tint = Color.White,
                     modifier = Modifier.size(18.dp)
                 )
+            }
+
+            if (onMoreClick != null) {
+                Spacer(modifier = Modifier.width(2.dp))
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onMoreClick()
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "More options",
+                        tint = appColors.textSecondary,
+                        modifier = Modifier.size(17.dp)
+                    )
+                }
             }
         }
     }

@@ -14,7 +14,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -1857,12 +1859,18 @@ private fun SearchTrackItemRow(
             }
             .clip(RoundedCornerShape(14.dp))
             .background(rowBackgroundColor)
-            .clickable(
+            .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     onClick()
+                },
+                onLongClick = onMoreClick?.let { cb ->
+                    {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        cb()
+                    }
                 }
             )
             .padding(horizontal = 10.dp, vertical = 8.dp)

@@ -53,6 +53,12 @@ class LyricsProviderService(private val context: Context) {
                 .build()
             chain.proceed(request)
         }
+        .addNetworkInterceptor(
+            MediaNetworkClients.createDataUsageInterceptor(
+                category = com.xperience.player.domain.model.DataUsageCategory.LYRICS,
+                appContextProvider = { context.applicationContext }
+            )
+        )
         .build()
 
     private val providers = mutableListOf<LyricsProviderConfig>()

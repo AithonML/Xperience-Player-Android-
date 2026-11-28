@@ -3,8 +3,10 @@ package com.xperience.player.service
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
@@ -160,8 +162,8 @@ class AndroidWebViewPlayerScriptSolver(
                     }
                     resultDeferred.await()
                 }
-            }?.takeIf { it.startsWith("http", ignoreCase = true) }
-                ?: if (signature.isBlank()) cleanUrl else null
+            }?.takeIf { YouTubeSecurityPolicy.isSafeHttpsYouTubeStreamUrl(it) }
+                ?: if (signature.isBlank() && YouTubeSecurityPolicy.isSafeHttpsYouTubeStreamUrl(cleanUrl)) cleanUrl else null
         }
     }
 
@@ -275,23 +277,33 @@ class AndroidWebViewPlayerScriptSolver(
                 val wv = WebView(appContext)
                 wv.settings.javaScriptEnabled = true
                 wv.settings.domStorageEnabled = false
+                wv.settings.databaseEnabled = false
+                wv.settings.allowFileAccess = false
+                wv.settings.allowContentAccess = false
+                wv.settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 wv.settings.loadsImagesAutomatically = false
                 wv.settings.blockNetworkImage = true
+                runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(wv, false) }
                 wv.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView?,
+                        request: WebResourceRequest?
+                    ): Boolean = true
+
                     override fun shouldInterceptRequest(
                         view: WebView?,
                         request: WebResourceRequest?
-                    ): WebResourceResponse? {
+                    ): WebResourceResponse {
                         val reqUrl = request?.url?.toString().orEmpty()
-                        return when (reqUrl) {
-                            VIRTUAL_SCRIPT_URL -> WebResourceResponse(
+                        return if (reqUrl == VIRTUAL_SCRIPT_URL) {
+                            WebResourceResponse(
                                 "application/javascript",
                                 "utf-8",
                                 ByteArrayInputStream(jsBytes)
                             )
-                            ORIGIN_URL -> null
-                            else -> WebResourceResponse(
-                                "text/plain",
+                        } else {
+                            WebResourceResponse(
+                                "text/html",
                                 "utf-8",
                                 ByteArrayInputStream(ByteArray(0))
                             )
